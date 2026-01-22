@@ -49,11 +49,17 @@ function parseContextsFromText(text: string): MandrelContext[] {
   // Format varies but typically includes: type, content preview, tags, ID
   const lines = text.split('\n');
   let currentContext: Partial<MandrelContext> | null = null;
+  let inContent = false;
+  let contentLines: string[] = [];
 
   for (const line of lines) {
     // Look for numbered entries like "1. **completion**" or similar
     const typeMatch = line.match(/^\s*\d+\.\s+\*\*(\w+)\*\*/i);
     if (typeMatch) {
+      // Save accumulated content before switching context
+      if (currentContext && inContent && contentLines.length > 0) {
+        currentContext.content = contentLines.join('\n').trim();
+      }
       if (currentContext && currentContext.id) {
         contexts.push(currentContext as MandrelContext);
       }
@@ -62,21 +68,28 @@ function parseContextsFromText(text: string): MandrelContext[] {
         tags: [],
         createdAt: new Date().toISOString(),
       };
+      inContent = false;
+      contentLines = [];
       continue;
     }
 
     if (!currentContext) continue;
 
-    // Parse Content line
-    const contentMatch = line.match(/^\s*Content:\s*(.+)/i);
+    // Parse Content line (and start accumulating multi-line content)
+    const contentMatch = line.match(/^\s*Content:\s*(.*)$/i);
     if (contentMatch) {
-      currentContext.content = contentMatch[1].trim();
+      inContent = true;
+      contentLines = [contentMatch[1].trim()];
       continue;
     }
 
-    // Parse Tags line
+    // Parse Tags line - ends content accumulation
     const tagsMatch = line.match(/^\s*Tags:\s*\[([^\]]*)\]/i);
     if (tagsMatch) {
+      if (inContent && contentLines.length > 0) {
+        currentContext.content = contentLines.join('\n').trim();
+        inContent = false;
+      }
       currentContext.tags = tagsMatch[1]
         .split(',')
         .map((t) => t.trim())
@@ -84,9 +97,13 @@ function parseContextsFromText(text: string): MandrelContext[] {
       continue;
     }
 
-    // Parse ID line
+    // Parse ID line - ends content accumulation
     const idMatch = line.match(/^\s*ID:\s*(\S+)/i);
     if (idMatch) {
+      if (inContent && contentLines.length > 0) {
+        currentContext.content = contentLines.join('\n').trim();
+        inContent = false;
+      }
       currentContext.id = idMatch[1];
       continue;
     }
@@ -102,12 +119,23 @@ function parseContextsFromText(text: string): MandrelContext[] {
     const timeMatch = line.match(/(?:created|stored)[:\s]+(\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2})/i);
     if (timeMatch) {
       currentContext.createdAt = timeMatch[1];
+      continue;
+    }
+
+    // If we're in content mode and line isn't a known field, accumulate it
+    if (inContent && line.trim()) {
+      contentLines.push(line);
     }
   }
 
   // Don't forget the last context
-  if (currentContext && currentContext.id) {
-    contexts.push(currentContext as MandrelContext);
+  if (currentContext) {
+    if (inContent && contentLines.length > 0) {
+      currentContext.content = contentLines.join('\n').trim();
+    }
+    if (currentContext.id) {
+      contexts.push(currentContext as MandrelContext);
+    }
   }
 
   return contexts;
@@ -233,8 +261,8 @@ export async function getContextStats(): Promise<ContextStatsResponse> {
       .map((c) => c.text)
       .join('\n');
 
-    // Extract total count
-    const totalMatch = fullText.match(/total[:\s]+(\d+)/i);
+    // Extract total count - matches "Total Contexts: 147" or similar
+    const totalMatch = fullText.match(/total\s*(?:contexts)?[:\s]+(\d+)/i);
     const total = totalMatch ? parseInt(totalMatch[1], 10) : 0;
 
     // Extract type breakdown
