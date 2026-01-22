@@ -876,6 +876,93 @@ app.get('/api/mandrel/ping', async (_req: Request, res: Response) => {
   }
 });
 
+
+/**
+ * Project Management Endpoints (Mandrel Integration)
+ */
+
+/**
+ * Get list of all Mandrel projects
+ */
+app.get("/api/mandrel/projects/list", async (_req: Request, res: Response) => {
+  try {
+    const MANDREL_URL = process.env.MANDREL_URL || "https://mandrel.ridgetopai.net/mcp/tools";
+    const response = await fetch(`${MANDREL_URL}/project_list`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ arguments: { includeStats: true } }),
+    });
+
+    if (!response.ok) {
+      res.json({ success: false, error: `Mandrel HTTP ${response.status}` });
+      return;
+    }
+
+    const data = await response.json();
+    res.json({ success: true, result: data });
+  } catch (error) {
+    console.error("[ProjectAPI] Failed to get project list:", error);
+    res.json({ success: false, error: "Failed to fetch project list" });
+  }
+});
+
+/**
+ * Get current active Mandrel project
+ */
+app.get("/api/mandrel/projects/current", async (_req: Request, res: Response) => {
+  try {
+    const MANDREL_URL = process.env.MANDREL_URL || "https://mandrel.ridgetopai.net/mcp/tools";
+    const response = await fetch(`${MANDREL_URL}/project_current`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ arguments: {} }),
+    });
+
+    if (!response.ok) {
+      res.json({ success: false, error: `Mandrel HTTP ${response.status}` });
+      return;
+    }
+
+    const data = await response.json();
+    res.json({ success: true, result: data });
+  } catch (error) {
+    console.error("[ProjectAPI] Failed to get current project:", error);
+    res.json({ success: false, error: "Failed to fetch current project" });
+  }
+});
+
+/**
+ * Switch to a different Mandrel project
+ */
+app.post("/api/mandrel/projects/switch", async (req: Request, res: Response) => {
+  try {
+    const { project } = req.body;
+    
+    if (!project) {
+      res.status(400).json({ success: false, error: "Project name or ID required" });
+      return;
+    }
+
+    const MANDREL_URL = process.env.MANDREL_URL || "https://mandrel.ridgetopai.net/mcp/tools";
+    const response = await fetch(`${MANDREL_URL}/project_switch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ arguments: { project } }),
+    });
+
+    if (!response.ok) {
+      res.json({ success: false, error: `Mandrel HTTP ${response.status}` });
+      return;
+    }
+
+    const data = await response.json();
+    res.json({ success: true, result: data });
+  } catch (error) {
+    console.error("[ProjectAPI] Failed to switch project:", error);
+    res.json({ success: false, error: "Failed to switch project" });
+  }
+});
+
 // ==========================================
 // Support Ticket Endpoints (Instance 20 - OPERATE)
 // ==========================================
