@@ -1,0 +1,98 @@
+@import "tailwindcss";
+
+/* RidgeTop AI Command Center - Design Tokens */
+
+@theme {
+  /* Surface Hierarchy (Dark theme) */
+  --color-surface-0: #0a0a0f;
+  --color-surface-1: #12121a;
+  --color-surface-2: #1a1a24;
+  --color-surface-3: #24242e;
+  --color-surface-4: #2e2e38;
+
+  /* Text Hierarchy */
+  --color-text-primary: #f0f0f5;
+  --color-text-secondary: #a0a0b0;
+  --color-text-tertiary: #606070;
+  --color-text-disabled: #404050;
+
+  /* Status Colors */
+  --color-status-idle: #404050;
+  --color-status-pending: #60a5fa;
+  --color-status-active: #fbbf24;
+  --color-status-review: #a855f7;
+  --color-status-complete: #4ade80;
+  --color-status-error: #f87171;
+
+  /* Accent Colors */
+  --color-accent-primary: #00d4ff;
+  --color-accent-gold: #ffd700;
+  --color-accent-purple: #9d4edd;
+
+  /* Semantic Colors */
+  --color-human-action: #ffd700;
+  --color-ai-action: #9d4edd;
+  --color-system-action: #60a5fa;
+
+  /* Borders */
+  --color-border-subtle: #24242e;
+  --color-border-default: #2e2e38;
+  --color-border-strong: #404050;
+}
+
+/* Base Styles */
+body {
+  @apply bg-surface-0 text-text-primary;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-surface-1;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-surface-3 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-surface-4;
+}
+
+/* Focus Styles */
+*:focus-visible {
+  @apply outline-none ring-2 ring-accent-primary ring-offset-2 ring-offset-surface-1;
+}
+
+/* Animation Utilities */
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+@keyframes slide-in-right {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes slide-in-up {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.animate-pulse-subtle {
+  animation: pulse-subtle 2s ease-in-out infinite;
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.3s ease-out;
+}
+
+.animate-slide-in-up {
+  animation: slide-in-up 0.3s ease-out;
+}
