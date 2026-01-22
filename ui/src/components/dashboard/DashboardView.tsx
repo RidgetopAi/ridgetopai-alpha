@@ -6,13 +6,15 @@ import { ActivityStream } from './ActivityStream';
 import { BugFixPanel } from '../workflows';
 import { ContentPanel } from '../content-workflows';
 import { OrchestrationPanel } from '../orchestration';
+import { SupportTicketPanel } from '../support-workflows';
+import { MonitoringAlertPanel } from '../monitoring-workflows';
 
 export function DashboardView() {
   return (
     <div className="flex-1 p-6 overflow-auto">
       <div className="max-w-7xl mx-auto space-y-6">
-        {/* Hero Section: Orchestrator (COMMAND) + PRODUCE + GROW */}
-        <div className="grid grid-cols-12 gap-6">
+        {/* Row 1: COMMAND, PRODUCE, GROW (3 panels) */}
+        <div className="grid grid-cols-12 gap-4">
           {/* COMMAND Capability - Orchestrator (primary interface) */}
           <div className="col-span-4 h-[500px]">
             <OrchestrationPanel />
@@ -24,6 +26,18 @@ export function DashboardView() {
           {/* GROW Capability - Content Generation */}
           <div className="col-span-4 h-[500px]">
             <ContentPanel />
+          </div>
+        </div>
+
+        {/* Row 2: OPERATE capabilities (Support + Monitoring) */}
+        <div className="grid grid-cols-12 gap-4">
+          {/* OPERATE - Support Tickets */}
+          <div className="col-span-6 h-[400px]">
+            <SupportTicketPanel />
+          </div>
+          {/* OPERATE - Monitoring Alerts */}
+          <div className="col-span-6 h-[400px]">
+            <MonitoringAlertPanel />
           </div>
         </div>
 

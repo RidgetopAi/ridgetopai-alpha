@@ -11,7 +11,7 @@
  * Accessed via SSH tunnel or direct VPS connection
  */
 
-import type { BugReport, BugAnalysis, ContentBrief, ContentGenerationResult } from './types.js';
+import type { BugReport, BugAnalysis, ContentBrief, ContentGenerationResult, SupportTicket, TicketAnalysis, MonitoringAlert, AlertAnalysis } from './types.js';
 
 // Configuration
 // Default to the public Mandrel URL on VPS - can be overridden for local development
@@ -39,6 +39,36 @@ export interface WorkflowCompletion {
   review?: {
     decision: 'approved' | 'rejected' | 'changes_requested';
     feedback?: string;
+  };
+  completedAt: Date;
+}
+
+// Structure for storing support ticket completions
+export interface TicketCompletion {
+  type: 'support';
+  capability: 'OPERATE';
+  workflowId: string;
+  input: SupportTicket;
+  output: TicketAnalysis;
+  response?: {
+    sentTo: string;
+    body: string;
+    sentAt: Date;
+  };
+  completedAt: Date;
+}
+
+// Structure for storing monitoring alert completions
+export interface AlertCompletion {
+  type: 'monitoring';
+  capability: 'OPERATE';
+  workflowId: string;
+  input: MonitoringAlert;
+  output: AlertAnalysis;
+  remediation?: {
+    action: string;
+    notes?: string;
+    executedAt: Date;
   };
   completedAt: Date;
 }
@@ -391,4 +421,246 @@ export async function storeDecision(
   });
 
   return response?.success === true;
+}
+
+/**
+ * Build context augmentation for support ticket analysis prompts
+ */
+export async function getContextForTicketAnalysis(
+  ticket: SupportTicket
+): Promise<string> {
+  // Search for similar tickets
+  const query = `support ticket ${ticket.category} ${ticket.title} ${ticket.description.substring(0, 100)}`;
+  const contexts = await searchRelevantContext(query, {
+    type: 'completion',
+    limit: 3,
+  });
+
+  if (contexts.length === 0) {
+    return '';
+  }
+
+  // Build context section for prompt
+  return `
+## Similar Past Support Cases (from institutional memory)
+
+The following past support tickets may be relevant to this issue:
+
+${contexts.map((c, i) => `### Previous Case ${i + 1}
+${c.content.substring(0, 500)}${c.content.length > 500 ? '...' : ''}
+`).join('\n')}
+
+Consider whether these past cases provide insights for the current ticket.
+`;
+}
+
+/**
+ * Store a completed support ticket workflow to Mandrel
+ */
+export async function storeTicketCompletion(
+  completion: TicketCompletion
+): Promise<boolean> {
+  console.log(`[MandrelClient] Storing support ticket completion: ${completion.workflowId}`);
+
+  // Build a human-readable summary for the content
+  const summary = buildTicketCompletionSummary(completion);
+
+  // Build tags for searchability
+  const tags = [
+    'workflow',
+    'support',
+    'operate',
+    'ridgetopai-alpha',
+    `category-${completion.input.category}`,
+    `severity-${completion.input.severity}`,
+  ];
+
+  if (completion.output.actionRequired.type) {
+    tags.push(`action-${completion.output.actionRequired.type}`);
+  }
+
+  const response = await callMandrelTool<StoreResponse>('context_store', {
+    content: summary,
+    type: 'completion' as MandrelContextType,
+    tags,
+  });
+
+  if (response?.success) {
+    console.log(`[MandrelClient] Ticket completion stored successfully`);
+    return true;
+  }
+
+  console.error(`[MandrelClient] Failed to store ticket completion`);
+  return false;
+}
+
+/**
+ * Build a human-readable summary of a support ticket completion
+ */
+function buildTicketCompletionSummary(completion: TicketCompletion): string {
+  const timestamp = completion.completedAt.toISOString();
+  const input = completion.input;
+  const output = completion.output;
+
+  return `WORKFLOW COMPLETION: Support Ticket
+Capability: ${completion.capability}
+WorkflowId: ${completion.workflowId}
+CompletedAt: ${timestamp}
+
+## Ticket Details
+Title: ${input.title}
+Customer: ${input.customerName || 'Anonymous'} <${input.customerEmail}>
+Category: ${input.category}
+Severity: ${input.severity}
+Description: ${input.description.substring(0, 500)}${input.description.length > 500 ? '...' : ''}
+${input.affectedFeature ? `Affected Feature: ${input.affectedFeature}` : ''}
+
+## Analysis
+Summary: ${output.summary}
+Root Cause: ${output.rootCause}
+Affected Users: ${output.affectedUsers}
+Impact: ${output.impact}
+Confidence: ${output.confidence}
+${output.workaround ? `Workaround: ${output.workaround}` : ''}
+
+## Action Required
+Type: ${output.actionRequired.type}
+Description: ${output.actionRequired.description}
+${output.actionRequired.estimatedEffort ? `Estimated Effort: ${output.actionRequired.estimatedEffort}` : ''}
+
+## Response
+${completion.response ? `
+Sent To: ${completion.response.sentTo}
+Sent At: ${completion.response.sentAt.toISOString()}
+Response: ${completion.response.body.substring(0, 300)}${completion.response.body.length > 300 ? '...' : ''}
+` : 'No response sent yet'}
+
+## Internal Notes
+${output.internalNotes}`;
+}
+
+/**
+ * Build context augmentation for monitoring alert analysis prompts
+ */
+export async function getContextForAlertAnalysis(
+  alert: MonitoringAlert
+): Promise<string> {
+  // Search for similar alerts/incidents
+  const query = `monitoring alert ${alert.category} ${alert.title} ${alert.affectedService || ''} ${alert.description.substring(0, 100)}`;
+  const contexts = await searchRelevantContext(query, {
+    type: 'completion',
+    limit: 3,
+  });
+
+  if (contexts.length === 0) {
+    return '';
+  }
+
+  // Build context section for prompt
+  return `
+## Similar Past Incidents (from institutional memory)
+
+The following past alerts/incidents may be relevant:
+
+${contexts.map((c, i) => `### Previous Incident ${i + 1}
+${c.content.substring(0, 500)}${c.content.length > 500 ? '...' : ''}
+`).join('\n')}
+
+Consider whether these past incidents provide insights for the current alert.
+`;
+}
+
+/**
+ * Store a completed monitoring alert workflow to Mandrel
+ */
+export async function storeAlertCompletion(
+  completion: AlertCompletion
+): Promise<boolean> {
+  console.log(`[MandrelClient] Storing monitoring alert completion: ${completion.workflowId}`);
+
+  // Build a human-readable summary for the content
+  const summary = buildAlertCompletionSummary(completion);
+
+  // Build tags for searchability
+  const tags = [
+    'workflow',
+    'monitoring',
+    'operate',
+    'ridgetopai-alpha',
+    `category-${completion.input.category}`,
+    `severity-${completion.input.severity}`,
+    `source-${completion.input.source}`,
+  ];
+
+  if (completion.output.suggestedRemediation.type) {
+    tags.push(`remediation-${completion.output.suggestedRemediation.type}`);
+  }
+
+  if (completion.input.affectedService) {
+    tags.push(`service-${completion.input.affectedService.toLowerCase().replace(/\s+/g, '-')}`);
+  }
+
+  const response = await callMandrelTool<StoreResponse>('context_store', {
+    content: summary,
+    type: 'completion' as MandrelContextType,
+    tags,
+  });
+
+  if (response?.success) {
+    console.log(`[MandrelClient] Alert completion stored successfully`);
+    return true;
+  }
+
+  console.error(`[MandrelClient] Failed to store alert completion`);
+  return false;
+}
+
+/**
+ * Build a human-readable summary of a monitoring alert completion
+ */
+function buildAlertCompletionSummary(completion: AlertCompletion): string {
+  const timestamp = completion.completedAt.toISOString();
+  const input = completion.input;
+  const output = completion.output;
+
+  return `WORKFLOW COMPLETION: Monitoring Alert
+Capability: ${completion.capability}
+WorkflowId: ${completion.workflowId}
+CompletedAt: ${timestamp}
+
+## Alert Details
+Title: ${input.title}
+Category: ${input.category}
+Severity: ${input.severity}
+Source: ${input.source}
+${input.affectedService ? `Affected Service: ${input.affectedService}` : ''}
+${input.metricValue ? `Metric Value: ${input.metricValue}` : ''}
+${input.threshold ? `Threshold: ${input.threshold}` : ''}
+Description: ${input.description.substring(0, 500)}${input.description.length > 500 ? '...' : ''}
+
+## Analysis
+Summary: ${output.summary}
+Root Cause: ${output.rootCause}
+Impact: ${output.impact}
+Urgency: ${output.urgency}
+Affected Systems: ${output.affectedSystems}
+Confidence: ${output.confidence}
+
+## Suggested Remediation
+Type: ${output.suggestedRemediation.type}
+Description: ${output.suggestedRemediation.description}
+Steps:
+${output.suggestedRemediation.steps.map((s, i) => `  ${i + 1}. ${s}`).join('\n')}
+Risks: ${output.suggestedRemediation.risks.join(', ') || 'None identified'}
+${output.suggestedRemediation.estimatedDowntime ? `Estimated Downtime: ${output.suggestedRemediation.estimatedDowntime}` : ''}
+
+## Remediation Outcome
+${completion.remediation ? `
+Action Taken: ${completion.remediation.action}
+Executed At: ${completion.remediation.executedAt.toISOString()}
+${completion.remediation.notes ? `Notes: ${completion.remediation.notes}` : ''}
+` : 'No remediation executed yet'}
+
+## Internal Notes
+${output.internalNotes}`;
 }

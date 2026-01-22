@@ -12,6 +12,9 @@ export * from './content-workflow';
 // Re-export orchestration types for COMMAND capability
 export * from './orchestration';
 
+// Re-export context types for Mandrel browser
+export * from './context';
+
 export type CommandStatus =
   | 'idle'
   | 'pending'

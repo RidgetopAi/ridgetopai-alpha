@@ -2,6 +2,10 @@ import { Header } from './components/layout/Header';
 import { Sidebar } from './components/layout/Sidebar';
 import { StatusBar } from './components/layout/StatusBar';
 import { DashboardView } from './components/dashboard/DashboardView';
+import { QueueView } from './components/queue';
+import { WorkflowView } from './components/workflow';
+import { ContextView } from './components/context';
+import { HistoryView } from './components/history';
 import { CommandInputOverlay } from './components/overlays/CommandInputOverlay';
 import { useUIStore } from './stores/ui-store';
 
@@ -14,29 +18,13 @@ function App() {
       case 'dashboard':
         return <DashboardView />;
       case 'queue':
-        return (
-          <div className="flex-1 flex items-center justify-center text-text-tertiary">
-            Queue View (Coming Soon)
-          </div>
-        );
+        return <QueueView />;
       case 'workflow':
-        return (
-          <div className="flex-1 flex items-center justify-center text-text-tertiary">
-            Workflow View (Coming Soon)
-          </div>
-        );
+        return <WorkflowView />;
       case 'context':
-        return (
-          <div className="flex-1 flex items-center justify-center text-text-tertiary">
-            Context View (Coming Soon)
-          </div>
-        );
+        return <ContextView />;
       case 'history':
-        return (
-          <div className="flex-1 flex items-center justify-center text-text-tertiary">
-            History View (Coming Soon)
-          </div>
-        );
+        return <HistoryView />;
       default:
         return <DashboardView />;
     }

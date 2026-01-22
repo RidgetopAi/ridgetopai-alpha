@@ -20,6 +20,11 @@
 
 import { spawn } from 'child_process';
 import { z } from 'zod';
+import {
+  saveSession,
+  getSession as getSessionFromStore,
+  getAllSessions as getAllSessionsFromStore,
+} from './sessionStore.js';
 
 // ==========================================
 // Types for Orchestration
@@ -28,7 +33,7 @@ import { z } from 'zod';
 /**
  * Task types that the orchestrator can generate and dispatch
  */
-export type TaskType = 'bugfix' | 'content' | 'support' | 'analysis' | 'review';
+export type TaskType = 'bugfix' | 'content' | 'support' | 'monitoring' | 'analysis' | 'review';
 
 /**
  * Priority levels for generated tasks
@@ -103,23 +108,21 @@ export interface OrchestrationSession {
 }
 
 // ==========================================
-// In-memory session storage
+// Session Storage (using sessionStore for persistence)
 // ==========================================
-
-const orchestrationSessions = new Map<string, OrchestrationSession>();
 
 /**
  * Get an orchestration session by ID
  */
 export function getSession(sessionId: string): OrchestrationSession | undefined {
-  return orchestrationSessions.get(sessionId);
+  return getSessionFromStore(sessionId);
 }
 
 /**
  * Get all active sessions
  */
 export function getAllSessions(): OrchestrationSession[] {
-  return Array.from(orchestrationSessions.values());
+  return getAllSessionsFromStore();
 }
 
 // ==========================================
@@ -174,10 +177,16 @@ AVAILABLE WORKFLOW TYPES:
 2. "content" - Content generation for marketing/docs (GROW capability)
    - Parameters: title, topic, format (blog_post|tweet_thread|documentation|email|announcement|case_study), audience (developers|business|general|internal), tone (professional|conversational|technical|educational), keyPoints, keywords
 
-3. "analysis" - General analysis tasks (internal)
+3. "support" - Support ticket handling (OPERATE capability)
+   - Parameters: title, description, customerEmail, customerName, category (bug_report|feature_request|billing|account|how_to|integration|performance|other), severity (critical|high|medium|low), affectedFeature, errorMessage
+
+4. "monitoring" - Monitoring alert handling (OPERATE capability)
+   - Parameters: title, description, category (infrastructure|application|security|business|other), severity (critical|high|medium|low), source (prometheus|cloudwatch|datadog|sentry|custom|manual), affectedService, metricValue, threshold
+
+5. "analysis" - General analysis tasks (internal)
    - Parameters: subject, question, depth (deep|surface)
 
-4. "review" - Code or content review (internal)
+6. "review" - Code or content review (internal)
    - Parameters: target, criteria
 
 CONTEXT:
@@ -200,7 +209,7 @@ RESPOND IN THIS EXACT JSON FORMAT:
   "reasoning": "Why you chose these specific tasks and this breakdown",
   "tasks": [
     {
-      "type": "bugfix|content|analysis|review",
+      "type": "bugfix|content|support|analysis|review",
       "priority": "high|medium|low",
       "title": "Short descriptive title",
       "description": "Detailed description of what this task should accomplish",
@@ -359,8 +368,8 @@ export async function createOrchestrationSession(
     updatedAt: new Date(),
   };
 
-  // Store the session
-  orchestrationSessions.set(sessionId, session);
+  // Store the session (with persistence)
+  await saveSession(session);
 
   console.log(`[Orchestrator] Session created with ${interpretation.tasks.length} tasks`);
 
@@ -377,7 +386,7 @@ export function updateTaskStatus(
   result?: unknown,
   error?: string
 ): OrchestrationSession | undefined {
-  const session = orchestrationSessions.get(sessionId);
+  const session = getSessionFromStore(sessionId);
   if (!session) return undefined;
 
   const task = session.interpretation.tasks.find(t => t.id === taskId);
@@ -406,6 +415,11 @@ export function updateTaskStatus(
   }
 
   session.updatedAt = new Date();
+
+  // Persist the updated session (async, fire-and-forget for performance)
+  saveSession(session).catch(err => {
+    console.error('[Orchestrator] Failed to persist session update:', err);
+  });
 
   return session;
 }
@@ -440,6 +454,12 @@ export async function dispatchTask(
         break;
       case 'content':
         await dispatchContent(workflowId, task, baseUrl);
+        break;
+      case 'support':
+        await dispatchSupport(workflowId, task, baseUrl);
+        break;
+      case 'monitoring':
+        await dispatchMonitoring(workflowId, task, baseUrl);
         break;
       case 'analysis':
       case 'review':
@@ -543,13 +563,101 @@ async function dispatchContent(
 }
 
 /**
+ * Dispatch to support ticket workflow
+ */
+async function dispatchSupport(
+  workflowId: string,
+  task: GeneratedTask,
+  baseUrl: string
+): Promise<void> {
+  const params = task.parameters as {
+    title?: string;
+    description?: string;
+    customerEmail?: string;
+    customerName?: string;
+    category?: string;
+    severity?: string;
+    affectedFeature?: string;
+    errorMessage?: string;
+  };
+
+  const body = {
+    workflowId,
+    ticket: {
+      title: params.title || task.title,
+      description: params.description || task.description,
+      customerEmail: params.customerEmail || 'support@example.com',
+      customerName: params.customerName,
+      category: params.category || 'other',
+      severity: params.severity || 'medium',
+      affectedFeature: params.affectedFeature,
+      errorMessage: params.errorMessage,
+    },
+  };
+
+  const response = await fetch(`${baseUrl}/api/workflow/support`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Support dispatch failed: ${response.status}`);
+  }
+}
+
+/**
+ * Dispatch to monitoring alert workflow
+ */
+async function dispatchMonitoring(
+  workflowId: string,
+  task: GeneratedTask,
+  baseUrl: string
+): Promise<void> {
+  const params = task.parameters as {
+    title?: string;
+    description?: string;
+    category?: string;
+    severity?: string;
+    source?: string;
+    affectedService?: string;
+    metricValue?: string;
+    threshold?: string;
+  };
+
+  const body = {
+    workflowId,
+    alert: {
+      title: params.title || task.title,
+      description: params.description || task.description,
+      category: params.category || 'other',
+      severity: params.severity || 'medium',
+      source: params.source || 'manual',
+      affectedService: params.affectedService,
+      metricValue: params.metricValue,
+      threshold: params.threshold,
+    },
+  };
+
+  const response = await fetch(`${baseUrl}/api/workflow/alert`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Monitoring dispatch failed: ${response.status}`);
+  }
+}
+
+/**
  * Dispatch all pending tasks in a session
  */
 export async function dispatchAllTasks(
   sessionId: string,
   baseUrl: string
 ): Promise<{ dispatched: number; failed: number }> {
-  const session = orchestrationSessions.get(sessionId);
+  const session = getSessionFromStore(sessionId);
   if (!session) {
     throw new Error(`Session not found: ${sessionId}`);
   }
