@@ -69,7 +69,7 @@ export const useContextStore = create<ContextStore>((set, get) => ({
   tagFilter: null,
   viewMode: 'recent',
 
-  loadRecentContexts: async (limit = 30) => {
+  loadRecentContexts: async (limit = 20) => {
     set({ isLoading: true, error: null, viewMode: 'recent' });
 
     try {
@@ -106,7 +106,7 @@ export const useContextStore = create<ContextStore>((set, get) => ({
     try {
       const response = await searchContexts(query, {
         type,
-        limit: 30,
+        limit: 20,
       });
 
       if (response.success) {
