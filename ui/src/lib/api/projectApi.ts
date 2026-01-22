@@ -138,11 +138,14 @@ export async function getProjectList(): Promise<ProjectListResponse> {
   try {
     const response = await callBackendProxy<{
       success: boolean;
-      result?: { content: Array<{ type: string; text: string }> };
+      result?: {
+        success: boolean;
+        result: { content: Array<{ type: string; text: string }> };
+      };
       error?: string;
     }>('/api/mandrel/projects/list');
 
-    if (!response?.success || !response.result?.content) {
+    if (!response?.success || !response.result?.result?.content) {
       return {
         success: false,
         projects: [],
@@ -150,7 +153,7 @@ export async function getProjectList(): Promise<ProjectListResponse> {
       };
     }
 
-    const fullText = response.result.content
+    const fullText = response.result.result.content
       .filter((c) => c.type === 'text')
       .map((c) => c.text)
       .join('\n');
@@ -177,18 +180,21 @@ export async function getCurrentProject(): Promise<ProjectCurrentResponse> {
   try {
     const response = await callBackendProxy<{
       success: boolean;
-      result?: { content: Array<{ type: string; text: string }> };
+      result?: {
+        success: boolean;
+        result: { content: Array<{ type: string; text: string }> };
+      };
       error?: string;
     }>('/api/mandrel/projects/current');
 
-    if (!response?.success || !response.result?.content) {
+    if (!response?.success || !response.result?.result?.content) {
       return {
         success: false,
         error: response?.error || 'Failed to get current project',
       };
     }
 
-    const fullText = response.result.content
+    const fullText = response.result.result.content
       .filter((c) => c.type === 'text')
       .map((c) => c.text)
       .join('\n');
@@ -223,21 +229,24 @@ export async function switchProject(
   try {
     const response = await callBackendProxy<{
       success: boolean;
-      result?: { content: Array<{ type: string; text: string }> };
+      result?: {
+        success: boolean;
+        result: { content: Array<{ type: string; text: string }> };
+      };
       error?: string;
     }>('/api/mandrel/projects/switch', {
       method: 'POST',
       body: JSON.stringify({ project: projectNameOrId }),
     });
 
-    if (!response?.success || !response.result?.content) {
+    if (!response?.success || !response.result?.result?.content) {
       return {
         success: false,
         error: response?.error || 'Failed to switch project',
       };
     }
 
-    const fullText = response.result.content
+    const fullText = response.result.result.content
       .filter((c) => c.type === 'text')
       .map((c) => c.text)
       .join('\n');
