@@ -15,6 +15,9 @@ export * from './orchestration';
 // Re-export context types for Mandrel browser
 export * from './context';
 
+// Re-export project types for Mandrel project management
+export * from './project';
+
 export type CommandStatus =
   | 'idle'
   | 'pending'

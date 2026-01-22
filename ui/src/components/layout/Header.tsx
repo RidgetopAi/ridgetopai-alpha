@@ -1,5 +1,6 @@
 import { Plus, Bell, Settings, Keyboard } from 'lucide-react';
 import { ActionButton } from '../shared/ActionButton';
+import { ProjectSelector } from './ProjectSelector';
 import { useUIStore } from '../../stores/ui-store';
 import { useCommandStore } from '../../stores/command-store';
 import { useAgentStore } from '../../stores/agent-store';
@@ -25,12 +26,7 @@ export function Header() {
 
         <div className="h-6 w-px bg-border-subtle" />
 
-        <div className="flex items-center gap-2">
-          <span className="text-text-secondary text-sm">Project:</span>
-          <button className="text-text-primary text-sm hover:text-accent-primary transition-colors">
-            ridgetopai-alpha
-          </button>
-        </div>
+        <ProjectSelector />
       </div>
 
       {/* Center: Status Summary */}
