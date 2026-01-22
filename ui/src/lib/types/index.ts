@@ -9,6 +9,9 @@ export * from './workflow';
 // Re-export content workflow types for GROW capability
 export * from './content-workflow';
 
+// Re-export orchestration types for COMMAND capability
+export * from './orchestration';
+
 export type CommandStatus =
   | 'idle'
   | 'pending'
