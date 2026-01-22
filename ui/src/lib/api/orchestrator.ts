@@ -12,7 +12,7 @@ import type {
 } from '../types/orchestration';
 
 // Backend URL - configurable via env
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 /**
  * Create a new orchestration session

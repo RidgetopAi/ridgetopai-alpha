@@ -10,7 +10,7 @@ import type {
   GeneratedContent,
 } from '../types/content-workflow';
 
-const API_BASE_URL = import.meta.env.VITE_TASKRUNNER_URL || 'http://localhost:3001';
+const API_BASE_URL = import.meta.env.VITE_TASKRUNNER_URL || '';
 
 export interface ContentGenerationResponse {
   success: boolean;

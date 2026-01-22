@@ -6,7 +6,7 @@
 
 import type { BugReport, BugAnalysis, CodeChange, Implementation } from '../types/workflow';
 
-const API_BASE_URL = import.meta.env.VITE_TASKRUNNER_URL || 'http://localhost:3001';
+const API_BASE_URL = import.meta.env.VITE_TASKRUNNER_URL || '';
 
 export interface BugFixResponse {
   success: boolean;

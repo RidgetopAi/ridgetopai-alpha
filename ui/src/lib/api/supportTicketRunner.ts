@@ -5,7 +5,7 @@
 
 import type { SupportTicket, TicketAnalysis } from '../types/support-workflow';
 
-const API_BASE_URL = import.meta.env.VITE_TASKRUNNER_URL || 'http://localhost:3001';
+const API_BASE_URL = import.meta.env.VITE_TASKRUNNER_URL || '';
 
 export interface TicketAnalysisResponse {
   success: boolean;

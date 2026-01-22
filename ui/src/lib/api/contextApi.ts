@@ -12,7 +12,7 @@ import type {
 } from '../types/context';
 
 // Backend API URL (proxies to Mandrel)
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 /**
  * Call backend Mandrel proxy endpoint
