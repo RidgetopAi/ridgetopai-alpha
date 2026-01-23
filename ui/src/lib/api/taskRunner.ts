@@ -95,6 +95,11 @@ export interface ImplementResponse {
   implementation?: {
     success: boolean;
     changedFiles: string[];
+    buildResult?: {
+      success: boolean;
+      command: string;
+      output?: string;
+    };
     testResults?: {
       passed: number;
       failed: number;
@@ -155,17 +160,64 @@ export function toImplementation(response: ImplementResponse): Implementation | 
   const impl = response.implementation;
   return {
     changedFiles: impl.changedFiles,
+    buildResult: impl.buildResult ? {
+      success: impl.buildResult.success,
+      command: impl.buildResult.command,
+      output: impl.buildResult.output,
+    } : undefined,
     testResults: impl.testResults ? {
       passed: impl.testResults.passed,
       failed: impl.testResults.failed,
       skipped: impl.testResults.skipped,
       duration: impl.testResults.duration,
-    } : {
-      passed: 0,
-      failed: 0,
-      skipped: 0,
-    },
+      output: impl.testResults.output,
+    } : undefined,
     warnings: impl.warnings,
     completedAt: new Date(),
   };
+}
+
+/**
+ * Store bug fix context to Mandrel for institutional memory
+ * @param stage - 'proposed' for initial analysis, 'confirmed' for user verification
+ */
+export async function storeBugFixToMandrel(
+  workflowId: string,
+  bugReport: BugReport,
+  analysis: BugAnalysis,
+  projectName?: string,
+  review?: { decision: 'approved' | 'rejected' | 'changes_requested'; feedback?: string },
+  stage?: 'proposed' | 'confirmed'
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/mandrel/bugfix/${workflowId}/complete`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        bugReport,
+        analysis,
+        projectName,
+        review,
+        stage,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return {
+        success: false,
+        error: data.error || `Request failed: ${response.statusText}`,
+      };
+    }
+
+    console.log('[TaskRunner API] Bug fix stored to Mandrel:', workflowId);
+    return { success: data.success };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[TaskRunner API] Failed to store to Mandrel:', errorMessage);
+    return { success: false, error: errorMessage };
+  }
 }

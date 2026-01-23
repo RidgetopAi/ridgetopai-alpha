@@ -74,12 +74,21 @@ export interface TestResults {
   skipped: number;
   duration?: number;
   failedTests?: string[];
+  output?: string;
+}
+
+// Build result
+export interface BuildResult {
+  success: boolean;
+  command: string;
+  output?: string;
 }
 
 // Implementation result
 export interface Implementation {
   changedFiles: string[];
-  testResults: TestResults;
+  buildResult?: BuildResult;
+  testResults?: TestResults;
   warnings: string[];
   completedAt: Date;
 }
@@ -90,6 +99,12 @@ export interface BugFixWorkflow {
   state: WorkflowState;
   createdAt: Date;
   updatedAt: Date;
+
+  // Project path for remote execution
+  projectPath?: string;
+
+  // Mandrel project name for context storage
+  projectName?: string;
 
   // Step 1: Bug Report
   bugReport: BugReport;
@@ -105,6 +120,14 @@ export interface BugFixWorkflow {
 
   // Step 6-7: Implementation and Verification (optional until implemented)
   implementation?: Implementation;
+
+  // Step 8: User confirmation that fix worked
+  confirmation?: {
+    confirmed: boolean;
+    feedback?: string;
+    confirmedAt: Date;
+    storedToMandrel: boolean;
+  };
 
   // Error information if failed
   error?: {

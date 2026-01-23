@@ -1,6 +1,7 @@
 /**
  * ContentReview - Review panel for generated content
  * Instance 12 - First GROW capability
+ * Instance 14 - Added expandable panel for detail view
  *
  * Shows generated content for human review with approve/revise/reject options.
  */
@@ -9,6 +10,7 @@ import { useState } from 'react';
 import type { ContentWorkflow, ContentReviewDecision } from '../../lib/types/content-workflow';
 import { FORMAT_LABELS, AUDIENCE_LABELS, TONE_LABELS } from '../../lib/types/content-workflow';
 import { useContentWorkflowStore } from '../../stores/content-workflow-store';
+import { ExpandablePanel } from '../shared/ExpandablePanel';
 
 interface ContentReviewProps {
   workflow: ContentWorkflow;
@@ -63,6 +65,10 @@ export function ContentReview({ workflow }: ContentReviewProps) {
   };
 
   return (
+    <ExpandablePanel
+      title={`Content: ${workflow.brief.title}`}
+      accent="green"
+    >
     <div className="space-y-4">
       {/* Content Brief Summary */}
       <div className="bg-gray-800/50 rounded-lg p-3">
@@ -249,5 +255,6 @@ export function ContentReview({ workflow }: ContentReviewProps) {
         </button>
       </div>
     </div>
+    </ExpandablePanel>
   );
 }

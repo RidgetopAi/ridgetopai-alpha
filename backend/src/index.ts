@@ -623,20 +623,22 @@ app.post('/api/workflow/content/:id/refine', async (req: Request, res: Response)
 
 /**
  * Store bug fix completion to Mandrel
+ * @param stage - 'proposed' for initial analysis, 'confirmed' for user verification
  */
 app.post('/api/mandrel/bugfix/:id/complete', async (req: Request, res: Response) => {
   const { id: workflowId } = req.params;
-  const { bugReport, analysis, review } = req.body;
+  const { bugReport, analysis, review, projectName, stage } = req.body;
 
   if (!bugReport || !analysis) {
     res.status(400).json({ error: 'bugReport and analysis are required' });
     return;
   }
 
-  console.log(`[API] Storing bug fix completion to Mandrel: ${workflowId}`);
+  const stageLabel = stage || 'completion';
+  console.log(`[API] Storing bug fix ${stageLabel} to Mandrel: ${workflowId}${projectName ? ` (project: ${projectName})` : ''}`);
 
   try {
-    const stored = await storeBugFixCompletion(workflowId, bugReport, analysis, review);
+    const stored = await storeBugFixCompletion(workflowId, bugReport, analysis, review, projectName, stage);
     res.json({
       success: stored,
       workflowId,

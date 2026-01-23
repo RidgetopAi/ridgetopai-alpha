@@ -15,10 +15,10 @@ import type {
   FixReview,
   Implementation,
 } from '../lib/types/workflow';
-import { executeBugFix, executeImplementation, toImplementation } from '../lib/api/taskRunner';
+import { executeBugFix, executeImplementation, toImplementation, storeBugFixToMandrel } from '../lib/api/taskRunner';
 
-// Feature flag: set to true to use real backend, false for mock
-const USE_REAL_BACKEND = import.meta.env.VITE_USE_REAL_BACKEND === 'true';
+// Always use real backend - mock mode removed for production
+const USE_REAL_BACKEND = true;
 
 interface WorkflowStore {
   // State
@@ -30,7 +30,7 @@ interface WorkflowStore {
 
   // Actions - Workflow Lifecycle
   createWorkflow: (bugReport: BugReport) => string;
-  submitWorkflow: (id: string, projectPath?: string) => Promise<void>;
+  submitWorkflow: (id: string, projectPath?: string, projectName?: string) => Promise<void>;
   transitionState: (id: string, newState: WorkflowState) => void;
   failWorkflow: (id: string, error: string, step: WorkflowState) => void;
 
@@ -38,6 +38,7 @@ interface WorkflowStore {
   setAnalysis: (id: string, analysis: BugAnalysis) => void;
   setReview: (id: string, review: FixReview) => void;
   setImplementation: (id: string, implementation: Implementation) => void;
+  confirmWorkflow: (id: string, confirmed: boolean, feedback?: string) => Promise<void>;
 
   // Actions - Selection
   selectWorkflow: (id: string | null) => void;
@@ -52,47 +53,6 @@ interface WorkflowStore {
 }
 
 const generateId = () => Math.random().toString(36).substring(2, 11);
-
-// Mock analysis data for testing the UI (fallback when backend unavailable)
-const createMockAnalysis = (bugReport: BugReport): BugAnalysis => ({
-  rootCause: `Based on the description "${bugReport.title}", the issue appears to be related to state management or data flow. The symptoms suggest that either the data is not being properly validated before use, or there's a race condition in the update logic.`,
-  evidence: `Found relevant code patterns in the codebase that match this behavior. The affected area likely involves component state updates or API response handling.`,
-  confidence: 'medium',
-  proposedFix: {
-    explanation: 'Add proper validation and null checks before processing the data. This will prevent the error state from occurring.',
-    changes: [
-      {
-        file: 'src/components/Example.tsx',
-        original: `function handleData(data) {
-  processData(data.value);
-}`,
-        proposed: `function handleData(data) {
-  if (!data?.value) {
-    console.warn('Invalid data received');
-    return;
-  }
-  processData(data.value);
-}`,
-      },
-    ],
-    risks: ['Minimal risk - adds defensive coding'],
-    testNeeds: ['Unit test for null/undefined cases', 'Integration test for error path'],
-  },
-  generatedAt: new Date(),
-});
-
-// Mock implementation result
-const createMockImplementation = (): Implementation => ({
-  changedFiles: ['src/components/Example.tsx'],
-  testResults: {
-    passed: 12,
-    failed: 0,
-    skipped: 2,
-    duration: 3400,
-  },
-  warnings: [],
-  completedAt: new Date(),
-});
 
 export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   workflows: [],
@@ -119,55 +79,71 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     return id;
   },
 
-  submitWorkflow: async (id, projectPath) => {
+  submitWorkflow: async (id, projectPath, projectName) => {
     const workflow = get().workflows.find((w) => w.id === id);
     if (!workflow || workflow.state !== 'draft') return;
+
+    // Store projectPath and projectName in workflow for later phases
+    if (projectPath || projectName) {
+      set((state) => ({
+        workflows: state.workflows.map((w) =>
+          w.id === id ? { ...w, ...(projectPath && { projectPath }), ...(projectName && { projectName }) } : w
+        ),
+        activeWorkflow:
+          state.activeWorkflow?.id === id
+            ? { ...state.activeWorkflow, ...(projectPath && { projectPath }), ...(projectName && { projectName }) }
+            : state.activeWorkflow,
+      }));
+    }
 
     // Start the workflow - transition to submitted
     get().transitionState(id, 'submitted');
 
-    const useReal = get().useRealBackend;
+    // Real backend execution - no mock fallback
+    try {
+      get().transitionState(id, 'analyzing');
 
-    if (useReal) {
-      // Real backend execution
-      try {
-        get().transitionState(id, 'analyzing');
+      console.log('[WorkflowStore] Calling TaskRunner backend...');
+      const response = await executeBugFix(id, workflow.bugReport, projectPath);
 
-        console.log('[WorkflowStore] Calling TaskRunner backend...');
-        const response = await executeBugFix(id, workflow.bugReport, projectPath);
+      if (response.success && response.analysis) {
+        // Add generatedAt timestamp if not present
+        const analysis: BugAnalysis = {
+          ...response.analysis,
+          generatedAt: response.analysis.generatedAt || new Date(),
+        };
+        get().setAnalysis(id, analysis);
+        get().transitionState(id, 'proposed');
+        console.log('[WorkflowStore] Analysis complete:', analysis.confidence);
 
-        if (response.success && response.analysis) {
-          // Add generatedAt timestamp if not present
-          const analysis: BugAnalysis = {
-            ...response.analysis,
-            generatedAt: response.analysis.generatedAt || new Date(),
-          };
-          get().setAnalysis(id, analysis);
-          get().transitionState(id, 'proposed');
-          console.log('[WorkflowStore] Analysis complete:', analysis.confidence);
-        } else {
-          get().failWorkflow(id, response.error || 'Analysis failed', 'analyzing');
-          console.error('[WorkflowStore] Analysis failed:', response.error);
+        // Store proposed fix to Mandrel for institutional memory (stage: proposed)
+        const updatedWorkflow = get().workflows.find((w) => w.id === id);
+        if (updatedWorkflow?.projectName) {
+          console.log('[WorkflowStore] Storing proposed fix to Mandrel:', updatedWorkflow.projectName);
+          storeBugFixToMandrel(
+            id,
+            updatedWorkflow.bugReport,
+            analysis,
+            updatedWorkflow.projectName,
+            undefined, // no review yet
+            'proposed' // stage: awaiting verification
+          ).then((result) => {
+            if (result.success) {
+              console.log('[WorkflowStore] Proposed fix stored to Mandrel successfully');
+            } else {
+              console.warn('[WorkflowStore] Failed to store to Mandrel:', result.error);
+            }
+          });
         }
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        get().failWorkflow(id, errorMessage, 'analyzing');
-        console.error('[WorkflowStore] Backend error:', errorMessage);
+      } else {
+        const errorMsg = response.error || 'Analysis failed - no details provided';
+        get().failWorkflow(id, errorMsg, 'analyzing');
+        console.error('[WorkflowStore] Analysis failed:', errorMsg);
       }
-    } else {
-      // Mock execution (original Instance 09 behavior)
-      setTimeout(() => {
-        get().transitionState(id, 'analyzing');
-
-        setTimeout(() => {
-          const w = get().workflows.find((wf) => wf.id === id);
-          if (!w) return;
-
-          const analysis = createMockAnalysis(w.bugReport);
-          get().setAnalysis(id, analysis);
-          get().transitionState(id, 'proposed');
-        }, 2000);
-      }, 1500);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      get().failWorkflow(id, `Backend error: ${errorMessage}`, 'analyzing');
+      console.error('[WorkflowStore] Backend error:', errorMessage);
     }
   },
 
@@ -232,63 +208,49 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     // If approved, start implementation
     if (review.decision === 'approved') {
       const workflow = get().workflows.find((w) => w.id === id);
-      const useReal = get().useRealBackend;
 
-      if (useReal && workflow?.analysis?.proposedFix?.changes) {
-        // Real backend implementation
-        (async () => {
-          try {
-            get().transitionState(id, 'implementing');
-            console.log('[WorkflowStore] Calling TaskRunner implementation...');
-
-            // Get the project path from the workflow if available
-            // For now, use current directory
-            const projectPath = undefined; // Could be stored in workflow
-
-            const response = await executeImplementation(
-              id,
-              workflow.analysis!.proposedFix!.changes,
-              projectPath,
-              true // run tests
-            );
-
-            if (response.success && response.implementation?.success) {
-              get().transitionState(id, 'verifying');
-              const impl = toImplementation(response);
-              if (impl) {
-                get().setImplementation(id, impl);
-                get().transitionState(id, 'completed');
-                console.log('[WorkflowStore] Implementation complete:', impl.changedFiles.join(', '));
-              } else {
-                get().failWorkflow(id, 'Failed to parse implementation result', 'implementing');
-              }
-            } else {
-              const errorMsg = response.error ||
-                response.implementation?.errors?.join(', ') ||
-                'Implementation failed';
-              get().failWorkflow(id, errorMsg, 'implementing');
-              console.error('[WorkflowStore] Implementation failed:', errorMsg);
-            }
-          } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-            get().failWorkflow(id, errorMessage, 'implementing');
-            console.error('[WorkflowStore] Implementation error:', errorMessage);
-          }
-        })();
-      } else {
-        // Mock implementation (fallback when backend unavailable)
-        get().transitionState(id, 'implementing');
-
-        setTimeout(() => {
-          get().transitionState(id, 'verifying');
-
-          setTimeout(() => {
-            const impl = createMockImplementation();
-            get().setImplementation(id, impl);
-            get().transitionState(id, 'completed');
-          }, 1500);
-        }, 2000);
+      if (!workflow?.analysis?.proposedFix?.changes) {
+        get().failWorkflow(id, 'No proposed changes to implement', 'implementing');
+        return;
       }
+
+      // Real backend implementation - no mock fallback
+      (async () => {
+        try {
+          get().transitionState(id, 'implementing');
+          console.log('[WorkflowStore] Calling TaskRunner implementation...');
+          console.log('[WorkflowStore] Using projectPath:', workflow.projectPath);
+
+          const response = await executeImplementation(
+            id,
+            workflow.analysis!.proposedFix!.changes,
+            workflow.projectPath,
+            true // run tests
+          );
+
+          if (response.success && response.implementation?.success) {
+            get().transitionState(id, 'verifying');
+            const impl = toImplementation(response);
+            if (impl) {
+              get().setImplementation(id, impl);
+              get().transitionState(id, 'completed');
+              console.log('[WorkflowStore] Implementation complete:', impl.changedFiles.join(', '));
+            } else {
+              get().failWorkflow(id, 'Failed to parse implementation result', 'implementing');
+            }
+          } else {
+            const errorMsg = response.error ||
+              response.implementation?.errors?.join(', ') ||
+              'Implementation failed - no details provided';
+            get().failWorkflow(id, errorMsg, 'implementing');
+            console.error('[WorkflowStore] Implementation failed:', errorMsg);
+          }
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          get().failWorkflow(id, `Implementation error: ${errorMessage}`, 'implementing');
+          console.error('[WorkflowStore] Implementation error:', errorMessage);
+        }
+      })();
     } else if (review.decision === 'rejected') {
       get().failWorkflow(id, 'Fix rejected by reviewer', 'reviewing');
     }
@@ -305,6 +267,66 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
           ? { ...state.activeWorkflow, implementation, updatedAt: new Date() }
           : state.activeWorkflow,
     }));
+  },
+
+  confirmWorkflow: async (id, confirmed, feedback) => {
+    const workflow = get().workflows.find((w) => w.id === id);
+    if (!workflow || workflow.state !== 'completed' || !workflow.analysis) {
+      console.warn('[WorkflowStore] Cannot confirm workflow:', id);
+      return;
+    }
+
+    const confirmation = {
+      confirmed,
+      feedback,
+      confirmedAt: new Date(),
+      storedToMandrel: false,
+    };
+
+    // Update workflow with confirmation (before Mandrel call)
+    set((state) => ({
+      workflows: state.workflows.map((w) =>
+        w.id === id ? { ...w, confirmation, updatedAt: new Date() } : w
+      ),
+      activeWorkflow:
+        state.activeWorkflow?.id === id
+          ? { ...state.activeWorkflow, confirmation, updatedAt: new Date() }
+          : state.activeWorkflow,
+    }));
+
+    // Store confirmed fix to Mandrel (stage: confirmed)
+    if (workflow.projectName) {
+      console.log('[WorkflowStore] Storing confirmed fix to Mandrel:', workflow.projectName);
+      const reviewDecision = confirmed ? 'approved' : 'rejected';
+
+      const result = await storeBugFixToMandrel(
+        id,
+        workflow.bugReport,
+        workflow.analysis,
+        workflow.projectName,
+        { decision: reviewDecision, feedback },
+        'confirmed' // stage: user has verified
+      );
+
+      // Update storedToMandrel status
+      set((state) => ({
+        workflows: state.workflows.map((w) =>
+          w.id === id && w.confirmation
+            ? { ...w, confirmation: { ...w.confirmation, storedToMandrel: result.success } }
+            : w
+        ),
+        activeWorkflow:
+          state.activeWorkflow?.id === id && state.activeWorkflow.confirmation
+            ? { ...state.activeWorkflow, confirmation: { ...state.activeWorkflow.confirmation, storedToMandrel: result.success } }
+            : state.activeWorkflow,
+      }));
+
+      if (result.success) {
+        console.log('[WorkflowStore] Confirmed fix stored to Mandrel successfully');
+      } else {
+        console.warn('[WorkflowStore] Failed to store confirmed fix to Mandrel:', result.error);
+      }
+    }
   },
 
   selectWorkflow: (id) => {

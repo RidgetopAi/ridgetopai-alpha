@@ -23,6 +23,68 @@ const DEFAULT_CONFIG: TaskRunnerConfig = {
   projectPath: process.cwd(),
 };
 
+// Remote execution configuration
+const REMOTE_USER = process.env.REMOTE_USER || 'ridgetop';
+const REMOTE_PORT = process.env.REMOTE_PORT || '2222';
+const REMOTE_HOST = process.env.REMOTE_HOST || 'localhost';
+const USE_REMOTE = process.env.USE_REMOTE_EXECUTION === 'true';
+
+/**
+ * Escape a string for use in a shell command
+ */
+function escapeShellArg(arg: string): string {
+  // Use base64 encoding to safely pass complex prompts through SSH
+  return Buffer.from(arg).toString('base64');
+}
+
+/**
+ * Spawn Claude CLI either locally or remotely via SSH tunnel
+ */
+function spawnClaude(prompt: string, projectPath: string, env: NodeJS.ProcessEnv): ChildProcess {
+  if (USE_REMOTE) {
+    // Remote execution via SSH tunnel
+    // Write prompt to a temp file and execute via SSH to avoid encoding issues
+    const tempFile = `/tmp/claude-prompt-${Date.now()}.txt`;
+
+    console.log(`[TaskRunner] Remote execution via SSH tunnel to ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PORT}`);
+    console.log(`[TaskRunner] Remote project path: ${projectPath}`);
+
+    // Use bash -l to load login profile, write prompt to temp file, run claude, clean up
+    const remoteCommand = `bash -l -c 'cat > ${tempFile} && cd "${projectPath}" && claude --print --dangerously-skip-permissions "$(cat ${tempFile})" && rm -f ${tempFile}'`;
+
+    const child = spawn('ssh', [
+      '-p', REMOTE_PORT,
+      '-o', 'StrictHostKeyChecking=no',
+      '-o', 'ConnectTimeout=10',
+      `${REMOTE_USER}@${REMOTE_HOST}`,
+      remoteCommand
+    ], {
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],  // Enable stdin for prompt
+    });
+
+    // Write prompt to SSH stdin
+    if (child.stdin) {
+      child.stdin.write(prompt);
+      child.stdin.end();
+    }
+
+    return child;
+  } else {
+    // Local execution
+    console.log(`[TaskRunner] Local execution at: ${projectPath}`);
+    return spawn('claude', [
+      '--print',
+      '--dangerously-skip-permissions',
+      prompt,
+    ], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: projectPath,
+    });
+  }
+}
+
 /**
  * Build the analysis prompt for bug fix workflow
  * Instance 13: Added mandrelContext parameter for institutional memory
@@ -164,16 +226,8 @@ export async function runBugAnalysis(
 
     // Spawn claude CLI with the analysis prompt
     // Using --print to get output and --dangerously-skip-permissions for automated execution
-    // NOTE: cwd sets the project path - do NOT use -p flag (that's --print, not project path)
-    const child: ChildProcess = spawn('claude', [
-      '--print',
-      '--dangerously-skip-permissions',
-      prompt,
-    ], {
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      cwd: projectPath,
-    });
+    // Supports both local and remote execution via SSH tunnel
+    const child: ChildProcess = spawnClaude(prompt, projectPath, process.env);
 
     const cleanup = () => {
       if (timeoutHandle) {
@@ -313,8 +367,9 @@ ${changesDescription}
 
 1. Apply each change to the specified file
 2. Make ONLY the approved changes - do not modify anything else
-3. ${runTests ? 'Run the test suite to verify changes work correctly' : 'Skip test verification'}
-4. Report what was done
+3. Run the build to verify the code compiles cleanly (cargo build, npm run build, etc.)
+4. ${runTests ? 'Run the test suite to verify changes work correctly' : 'Skip test verification'}
+5. Report what was done
 
 ## Output Format
 
@@ -324,6 +379,11 @@ You MUST respond with a JSON object in this exact format (and nothing else):
 {
   "success": true | false,
   "changedFiles": ["list", "of", "files", "modified"],
+  "buildResult": {
+    "success": true | false,
+    "command": "the build command used",
+    "output": "summary of build output or errors"
+  },
   ${runTests ? `"testResults": {
     "passed": <number>,
     "failed": <number>,
@@ -340,7 +400,8 @@ Important:
 - Apply changes EXACTLY as specified - match whitespace and formatting
 - Do not add extra changes or "improvements"
 - If a file cannot be found, report it in errors
-- If tests fail after changes, still report success: false with the test results`;
+- If the build fails, report success: false with the build errors
+- If tests fail after changes, report success: false with the test results`;
 }
 
 /**
@@ -356,6 +417,7 @@ function parseImplementationOutput(output: string): ImplementationResult {
       return {
         success: parsed.success ?? false,
         changedFiles: parsed.changedFiles || [],
+        buildResult: parsed.buildResult,
         testResults: parsed.testResults,
         warnings: parsed.warnings || [],
         errors: parsed.errors || [],
@@ -372,6 +434,7 @@ function parseImplementationOutput(output: string): ImplementationResult {
     return {
       success: parsed.success ?? false,
       changedFiles: parsed.changedFiles || [],
+      buildResult: parsed.buildResult,
       testResults: parsed.testResults,
       warnings: parsed.warnings || [],
       errors: parsed.errors || [],
@@ -413,15 +476,8 @@ export async function runImplementation(
     console.log(`[TaskRunner] Run tests: ${runTests}`);
 
     // Spawn claude CLI with the implementation prompt
-    const child: ChildProcess = spawn('claude', [
-      '--print',
-      '--dangerously-skip-permissions',
-      prompt,
-    ], {
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      cwd: projectPath,
-    });
+    // Supports both local and remote execution via SSH tunnel
+    const child: ChildProcess = spawnClaude(prompt, projectPath, process.env);
 
     const cleanup = () => {
       if (timeoutHandle) {
@@ -510,14 +566,19 @@ export async function runImplementation(
 /**
  * Store a completed bug fix workflow to Mandrel for institutional memory
  * Instance 13: Added for cross-workflow learning
+ * @param projectName - Mandrel project name to store to (calls project_switch first)
+ * @param stage - 'proposed' for initial analysis, 'confirmed' for user verification
  */
 export async function storeBugFixCompletion(
   workflowId: string,
   bugReport: BugReport,
   analysis: BugAnalysis,
-  review?: { decision: 'approved' | 'rejected' | 'changes_requested'; feedback?: string }
+  review?: { decision: 'approved' | 'rejected' | 'changes_requested'; feedback?: string },
+  projectName?: string,
+  stage?: 'proposed' | 'confirmed'
 ): Promise<boolean> {
-  console.log(`[TaskRunner] Storing bug fix completion: ${workflowId}`);
+  const stageLabel = stage || 'completion';
+  console.log(`[TaskRunner] Storing bug fix ${stageLabel}: ${workflowId}${projectName ? ` to project: ${projectName}` : ''}`);
 
   const completion: WorkflowCompletion = {
     type: 'bugfix',
@@ -527,10 +588,11 @@ export async function storeBugFixCompletion(
     output: analysis,
     review,
     completedAt: new Date(),
+    stage,
   };
 
   try {
-    const stored = await storeWorkflowCompletion(completion);
+    const stored = await storeWorkflowCompletion(completion, projectName);
     if (stored) {
       console.log(`[TaskRunner] Bug fix completion stored to Mandrel`);
     }

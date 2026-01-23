@@ -41,6 +41,8 @@ export interface WorkflowCompletion {
     feedback?: string;
   };
   completedAt: Date;
+  /** Stage of workflow: 'proposed' for initial analysis, 'confirmed' for user verification */
+  stage?: 'proposed' | 'confirmed';
 }
 
 // Structure for storing support ticket completions
@@ -141,21 +143,39 @@ async function callMandrelTool<T>(
 
 /**
  * Store a completed workflow to Mandrel for future reference
+ * @param completion - The workflow completion data
+ * @param projectName - Optional Mandrel project name to store to (will call project_switch first)
  */
 export async function storeWorkflowCompletion(
-  completion: WorkflowCompletion
+  completion: WorkflowCompletion,
+  projectName?: string
 ): Promise<boolean> {
   console.log(`[MandrelClient] Storing ${completion.type} workflow completion: ${completion.workflowId}`);
 
+  // Switch to the correct project before storing
+  if (projectName) {
+    const switched = await switchProject(projectName);
+    if (!switched) {
+      console.error(`[MandrelClient] Failed to switch to project ${projectName}, aborting store`);
+      return false;
+    }
+  }
+
   // Build a human-readable summary for the content
   const summary = buildCompletionSummary(completion);
+
+  // Determine context type based on stage
+  // - 'proposed' stage uses 'planning' type (awaiting verification)
+  // - 'confirmed' stage uses 'completion' type (verified outcome)
+  const contextType: MandrelContextType = completion.stage === 'proposed' ? 'planning' : 'completion';
 
   // Build tags for searchability
   const tags = [
     'workflow',
     completion.type,
     completion.capability.toLowerCase(),
-    'ridgetopai-alpha',
+    projectName || 'ridgetopai-alpha',
+    completion.stage || 'completion', // tag with stage for filtering
   ];
 
   // Add specific tags based on workflow type
@@ -168,12 +188,12 @@ export async function storeWorkflowCompletion(
 
   const response = await callMandrelTool<StoreResponse>('context_store', {
     content: summary,
-    type: 'completion' as MandrelContextType,
+    type: contextType,
     tags,
   });
 
   if (response?.success) {
-    console.log(`[MandrelClient] Workflow completion stored successfully`);
+    console.log(`[MandrelClient] Workflow ${completion.stage || 'completion'} stored successfully (type: ${contextType})`);
     return true;
   }
 
@@ -183,6 +203,9 @@ export async function storeWorkflowCompletion(
 
 /**
  * Build a human-readable summary of a workflow completion
+ * Generates different content based on stage:
+ * - 'proposed': Focus on the proposed fix awaiting verification
+ * - 'confirmed': Focus on the verified outcome with user confirmation
  */
 function buildCompletionSummary(completion: WorkflowCompletion): string {
   const timestamp = completion.completedAt.toISOString();
@@ -191,31 +214,58 @@ function buildCompletionSummary(completion: WorkflowCompletion): string {
     const input = completion.input as BugReport;
     const output = completion.output as BugAnalysis;
 
-    return `WORKFLOW COMPLETION: Bug Fix
+    // PROPOSED stage: AI analysis complete, awaiting user verification
+    if (completion.stage === 'proposed') {
+      return `PROPOSED FIX: Bug Fix (Awaiting Verification)
 Capability: ${completion.capability}
 WorkflowId: ${completion.workflowId}
-CompletedAt: ${timestamp}
+ProposedAt: ${timestamp}
+Status: PENDING VERIFICATION
 
 ## Bug Report
 Title: ${input.title}
 Severity: ${input.severity}
 Description: ${input.description}
 
-## Analysis
+## AI Analysis
 Root Cause: ${output.rootCause}
 Confidence: ${output.confidence}
 Evidence: ${output.evidence}
 
-## Proposed Fix
+## Proposed Solution
 ${output.proposedFix ? `
 Explanation: ${output.proposedFix.explanation}
-Files Changed: ${output.proposedFix.changes.map(c => c.file).join(', ')}
-Risks: ${output.proposedFix.risks.join('; ')}
+Files to Change: ${output.proposedFix.changes.map(c => c.file).join(', ')}
+Identified Risks: ${output.proposedFix.risks.join('; ')}
 ` : 'No fix proposed'}
 
-## Review
-Decision: ${completion.review?.decision || 'not reviewed'}
-${completion.review?.feedback ? `Feedback: ${completion.review.feedback}` : ''}`;
+---
+This proposed fix requires user verification after implementation.`;
+    }
+
+    // CONFIRMED stage: User has verified the fix worked or failed
+    const verificationStatus = completion.review?.decision === 'approved' ? 'FIX VERIFIED - WORKED' : 'FIX VERIFIED - FAILED';
+    return `VERIFIED FIX: Bug Fix
+Capability: ${completion.capability}
+WorkflowId: ${completion.workflowId}
+VerifiedAt: ${timestamp}
+Status: ${verificationStatus}
+
+## Bug Report
+Title: ${input.title}
+Severity: ${input.severity}
+
+## Fix Outcome
+Verification: ${completion.review?.decision === 'approved' ? 'User confirmed fix WORKED' : 'User reported fix FAILED'}
+${completion.review?.feedback ? `User Feedback: ${completion.review.feedback}` : ''}
+
+## Original Analysis
+Root Cause: ${output.rootCause}
+Confidence: ${output.confidence}
+${output.proposedFix ? `Files Changed: ${output.proposedFix.changes.map(c => c.file).join(', ')}` : ''}
+
+---
+This fix has been verified by the user.`;
   }
 
   if (completion.type === 'content') {
@@ -405,6 +455,26 @@ Ensure new content aligns with established brand voice and builds on previous wo
 export async function checkMandrelAvailable(): Promise<boolean> {
   const response = await callMandrelTool<{ success: boolean }>('mandrel_ping', {});
   return response?.success === true;
+}
+
+/**
+ * Switch Mandrel to a specific project
+ * MUST be called before storing context to ensure it goes to the right project
+ */
+export async function switchProject(projectName: string): Promise<boolean> {
+  console.log(`[MandrelClient] Switching to project: ${projectName}`);
+
+  const response = await callMandrelTool<{ success: boolean }>('project_switch', {
+    project: projectName,
+  });
+
+  if (response?.success) {
+    console.log(`[MandrelClient] Successfully switched to project: ${projectName}`);
+    return true;
+  }
+
+  console.error(`[MandrelClient] Failed to switch to project: ${projectName}`);
+  return false;
 }
 
 /**

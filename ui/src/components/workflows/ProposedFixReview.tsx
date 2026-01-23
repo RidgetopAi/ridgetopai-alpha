@@ -1,11 +1,13 @@
 /**
  * ProposedFixReview - Review AI-proposed bug fix
  * Instance 09 - First PRODUCE capability
+ * Instance 14 - Added expandable panel for detail view
  */
 
 import { useState } from 'react';
 import type { BugFixWorkflow, ReviewDecision, CodeChange } from '../../lib/types/workflow';
 import { useWorkflowStore } from '../../stores/workflow-store';
+import { ExpandablePanel } from '../shared/ExpandablePanel';
 
 interface ProposedFixReviewProps {
   workflow: BugFixWorkflow;
@@ -76,6 +78,10 @@ export function ProposedFixReview({ workflow }: ProposedFixReviewProps) {
   const isInReviewableState = workflow.state === 'proposed' || workflow.state === 'reviewing';
 
   return (
+    <ExpandablePanel
+      title={`Bug Fix: ${workflow.bugReport.title}`}
+      accent="purple"
+    >
     <div className="space-y-4">
       {/* Analysis Summary */}
       <div className="bg-gray-800/50 rounded-lg p-4">
@@ -178,5 +184,6 @@ export function ProposedFixReview({ workflow }: ProposedFixReviewProps) {
         </div>
       )}
     </div>
+    </ExpandablePanel>
   );
 }

@@ -104,10 +104,18 @@ export interface TestResult {
   output?: string;
 }
 
+// Build result from compiling after implementation
+export interface BuildResult {
+  success: boolean;
+  command: string;
+  output?: string;
+}
+
 // Implementation result from AI
 export interface ImplementationResult {
   success: boolean;
   changedFiles: string[];
+  buildResult?: BuildResult;
   testResults?: TestResult;
   warnings: string[];
   errors: string[];

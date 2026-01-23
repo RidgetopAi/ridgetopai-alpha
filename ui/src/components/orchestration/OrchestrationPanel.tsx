@@ -22,6 +22,7 @@ import { IntentInput } from './IntentInput';
 import { TaskList } from './TaskList';
 import { OrchestrationProgress } from './OrchestrationProgress';
 import { SESSION_STATE_LABELS } from '../../lib/types/orchestration';
+import { ExpandablePanel } from '../shared/ExpandablePanel';
 
 export function OrchestrationPanel() {
   const {
@@ -60,7 +61,15 @@ export function OrchestrationPanel() {
     const isExecuting = sessionState === 'executing';
     const isDone = sessionState === 'completed' || sessionState === 'failed';
 
+    const intentPreview = activeSession.intent.length > 40
+      ? activeSession.intent.substring(0, 40) + '...'
+      : activeSession.intent;
+
     return (
+      <ExpandablePanel
+        title={`Orchestration: ${intentPreview}`}
+        accent="cyan"
+      >
       <div className="space-y-4">
         {/* Header */}
         <div className="flex items-start justify-between">
@@ -173,6 +182,7 @@ export function OrchestrationPanel() {
           </div>
         )}
       </div>
+      </ExpandablePanel>
     );
   };
 
