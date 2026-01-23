@@ -1525,6 +1525,7 @@ app.get('/api/orchestrate/:sessionId', (req: Request, res: Response) => {
 
 /**
  * List all orchestration sessions
+ * Returns full sessions for History page display
  */
 app.get('/api/orchestrate', (_req: Request, res: Response) => {
   const sessions = getAllSessions();
@@ -1534,7 +1535,9 @@ app.get('/api/orchestrate', (_req: Request, res: Response) => {
     count: sessions.length,
     sessions: sessions.map(s => ({
       sessionId: s.sessionId,
-      intent: s.intent.substring(0, 100) + (s.intent.length > 100 ? '...' : ''),
+      intent: s.intent,
+      context: s.context,
+      interpretation: s.interpretation,
       execution: s.execution,
       createdAt: s.createdAt,
       updatedAt: s.updatedAt,

@@ -224,10 +224,10 @@ export const useOrchestrationStore = create<OrchestrationStore>((set, get) => ({
     try {
       const response = await listOrchestrationSessions();
 
-      if (response.success) {
-        // Note: The list endpoint returns summaries, not full sessions
-        // For now we'll just log that sessions exist
-        console.log('[OrchestrationStore] Found', response.count, 'sessions');
+      if (response.success && response.sessions) {
+        // Load full sessions from backend
+        set({ sessions: response.sessions as OrchestrationSession[] });
+        console.log('[OrchestrationStore] Loaded', response.sessions.length, 'sessions from backend');
       }
     } catch (error) {
       console.error('[OrchestrationStore] Load sessions error:', error);

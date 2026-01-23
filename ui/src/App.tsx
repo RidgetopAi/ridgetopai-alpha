@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Header } from './components/layout/Header';
 import { Sidebar } from './components/layout/Sidebar';
 import { StatusBar } from './components/layout/StatusBar';
@@ -8,9 +9,16 @@ import { ContextView } from './components/context';
 import { HistoryView } from './components/history';
 import { CommandInputOverlay } from './components/overlays/CommandInputOverlay';
 import { useUIStore } from './stores/ui-store';
+import { useOrchestrationStore } from './stores/orchestration-store';
 
 function App() {
   const { activeView } = useUIStore();
+  const { loadSessions } = useOrchestrationStore();
+
+  // Load orchestration sessions on app mount for History page
+  useEffect(() => {
+    loadSessions();
+  }, [loadSessions]);
 
   // Render different views based on activeView
   const renderMainContent = () => {

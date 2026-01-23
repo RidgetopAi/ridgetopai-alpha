@@ -94,13 +94,7 @@ export interface ExecuteResponse {
 export interface ListSessionsResponse {
   success: boolean;
   count: number;
-  sessions: Array<{
-    sessionId: string;
-    intent: string;
-    execution: ExecutionSummary;
-    createdAt: string;
-    updatedAt: string;
-  }>;
+  sessions: OrchestrationSession[];
 }
 
 // Labels for display
