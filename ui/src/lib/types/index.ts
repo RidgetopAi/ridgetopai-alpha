@@ -37,7 +37,9 @@ export type ViewMode =
   | 'queue'
   | 'workflow'
   | 'context'
-  | 'history';
+  | 'history'
+  | 'goals'
+  | 'recommendations';
 
 export interface Command {
   id: string;

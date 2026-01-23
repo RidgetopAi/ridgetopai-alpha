@@ -1,8 +1,11 @@
-import { LayoutDashboard, ListTodo, GitBranch, Database, History, Bot } from 'lucide-react';
+import { LayoutDashboard, ListTodo, GitBranch, Database, History, Bot, Target, Lightbulb } from 'lucide-react';
+import { useEffect } from 'react';
 import type { ViewMode } from '../../lib/types';
 import { useUIStore } from '../../stores/ui-store';
 import { useCommandStore } from '../../stores/command-store';
 import { useAgentStore } from '../../stores/agent-store';
+import { useStrategicStore } from '../../stores/strategic-store';
+import { useGoalsStore } from '../../stores/goals-store';
 
 interface NavItem {
   id: ViewMode;
@@ -15,6 +18,14 @@ export function Sidebar() {
   const { activeView, setView } = useUIStore();
   const { queue, commands } = useCommandStore();
   const { agents } = useAgentStore();
+  const { stats: recommendationStats, loadStats: loadRecommendationStats } = useStrategicStore();
+  const { stats: goalStats, loadStats: loadGoalStats } = useGoalsStore();
+
+  // Load stats on mount
+  useEffect(() => {
+    loadRecommendationStats();
+    loadGoalStats();
+  }, [loadRecommendationStats, loadGoalStats]);
 
   const activeAgents = agents.filter((a) => a.status === 'working').length;
   const completedToday = commands.filter(
@@ -24,12 +35,18 @@ export function Sidebar() {
       new Date(c.completedAt).toDateString() === new Date().toDateString()
   ).length;
 
+  // Badge counts for Strategic Layer
+  const pendingRecommendations = recommendationStats?.pendingCount || 0;
+  const overdueGoals = goalStats?.overdueCount || 0;
+
   const navItems: NavItem[] = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'queue', label: 'Queue', icon: ListTodo, badge: queue.length || undefined },
     { id: 'workflow', label: 'Workflow', icon: GitBranch },
     { id: 'context', label: 'Context', icon: Database },
     { id: 'history', label: 'History', icon: History, badge: completedToday || undefined },
+    { id: 'goals', label: 'Goals', icon: Target, badge: overdueGoals || undefined },
+    { id: 'recommendations', label: 'Insights', icon: Lightbulb, badge: pendingRecommendations || undefined },
   ];
 
   return (

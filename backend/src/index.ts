@@ -71,6 +71,39 @@ import {
   EventSourceSchema,
   type EventSource,
 } from './types.js';
+// Strategic Layer Phase 2 imports
+import { analyzePatterns } from './strategic/patternAnalyzer.js';
+import * as patternRepository from './strategic/db/patternRepository.js';
+import { z } from 'zod';
+
+// Zod schemas for pattern API endpoints
+const PatternQuerySchema = z.object({
+  type: z.enum(['recurring_success', 'recurring_failure', 'timing_pattern', 'correlation', 'trend']).optional(),
+  status: z.enum(['active', 'superseded', 'dismissed']).optional().default('active'),
+  minConfidence: z.coerce.number().min(0).max(1).optional(),
+  limit: z.coerce.number().min(1).max(100).optional().default(50),
+  offset: z.coerce.number().min(0).optional().default(0),
+  orderBy: z.enum(['created_at', 'updated_at', 'confidence', 'observation_count']).optional().default('created_at'),
+  orderDir: z.enum(['ASC', 'DESC']).optional().default('DESC'),
+});
+
+const PatternAnalyzeRequestSchema = z.object({
+  minObservations: z.number().min(1).optional(),
+  analysisWindowDays: z.number().min(1).max(365).optional(),
+  minPatternConfidence: z.number().min(0).max(1).optional(),
+});
+
+const PatternUpdateSchema = z.object({
+  name: z.string().max(200).optional(),
+  description: z.string().optional(),
+  status: z.enum(['active', 'dismissed']).optional(),
+  dismissedReason: z.string().optional(),
+}).refine(data => {
+  if (data.status === 'dismissed' && !data.dismissedReason) {
+    return false;
+  }
+  return true;
+}, { message: 'dismissedReason required when status is dismissed' });
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -1865,6 +1898,946 @@ app.delete('/api/triggers/:id', async (req: Request, res: Response) => {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     console.error('[API] Delete trigger failed:', errorMessage);
     res.status(500).json({ error: errorMessage });
+  }
+});
+
+// ==========================================
+// Strategic Layer - Pattern Detection (Phase 2)
+// ==========================================
+
+/**
+ * List detected patterns with optional filters
+ */
+app.get('/api/strategic/patterns', async (req: Request, res: Response) => {
+  try {
+    const parseResult = PatternQuerySchema.safeParse(req.query);
+    if (!parseResult.success) {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid query parameters',
+        details: parseResult.error.issues,
+      });
+      return;
+    }
+
+    const { type, status, minConfidence, limit, offset, orderBy, orderDir } = parseResult.data;
+
+    const patterns = await patternRepository.queryPatterns({
+      patternType: type as patternRepository.PatternType | undefined,
+      status: status as 'active' | 'superseded' | 'dismissed' | undefined,
+      minConfidence,
+      limit,
+      offset,
+      orderBy: orderBy as 'created_at' | 'updated_at' | 'confidence' | 'observation_count',
+      orderDir: orderDir as 'ASC' | 'DESC',
+    });
+
+    res.json({
+      success: true,
+      patterns,
+      total: patterns.length,
+      limit,
+      offset,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] List patterns failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Get pattern statistics for dashboard
+ */
+app.get('/api/strategic/patterns/stats', async (_req: Request, res: Response) => {
+  try {
+    const stats = await patternRepository.getPatternStats();
+    res.json({ success: true, stats });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Get pattern stats failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Get recent pattern analysis runs
+ * NOTE: This route MUST be defined before /patterns/:id to avoid route conflict
+ */
+app.get('/api/strategic/patterns/runs', async (req: Request, res: Response) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 10;
+    const runs = await patternRepository.getRecentAnalysisRuns(Math.min(limit, 50));
+    res.json({ success: true, runs });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Get pattern runs failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Get a single pattern by ID
+ */
+app.get('/api/strategic/patterns/:id', async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  // Validate UUID format
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(id)) {
+    res.status(400).json({ success: false, error: 'Invalid pattern ID format' });
+    return;
+  }
+
+  try {
+    const pattern = await patternRepository.getPatternById(id);
+    if (!pattern) {
+      res.status(404).json({ success: false, error: 'Pattern not found' });
+      return;
+    }
+
+    res.json({ success: true, pattern });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Get pattern failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Manually trigger pattern analysis
+ */
+app.post('/api/strategic/patterns/analyze', async (req: Request, res: Response) => {
+  try {
+    const parseResult = PatternAnalyzeRequestSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid configuration',
+        details: parseResult.error.issues,
+      });
+      return;
+    }
+
+    console.log('[API] Manual pattern analysis triggered');
+    const result = await analyzePatterns(parseResult.data);
+
+    res.json({ success: true, result });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Pattern analysis failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Update a pattern (primarily for dismissing)
+ */
+app.patch('/api/strategic/patterns/:id', async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  // Validate UUID format
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(id)) {
+    res.status(400).json({ success: false, error: 'Invalid pattern ID format' });
+    return;
+  }
+
+  try {
+    const parseResult = PatternUpdateSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid update data',
+        details: parseResult.error.issues,
+      });
+      return;
+    }
+
+    const { name, description, status, dismissedReason } = parseResult.data;
+
+    // Handle dismiss case specially
+    if (status === 'dismissed' && dismissedReason) {
+      const updated = await patternRepository.dismissPattern(id, dismissedReason);
+      if (!updated) {
+        res.status(404).json({ success: false, error: 'Pattern not found' });
+        return;
+      }
+      res.json({ success: true, pattern: updated });
+      return;
+    }
+
+    // General update
+    const updated = await patternRepository.updatePattern(id, {
+      name,
+      description,
+      status: status as 'active' | 'dismissed' | undefined,
+    });
+
+    if (!updated) {
+      res.status(404).json({ success: false, error: 'Pattern not found' });
+      return;
+    }
+
+    res.json({ success: true, pattern: updated });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Update pattern failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+// ==========================================
+// Strategic Layer - Goal Management (Phase 3)
+// ==========================================
+
+// Import goal manager
+import * as goalManager from './strategic/goalManager.js';
+import * as goalRepository from './strategic/db/goalRepository.js';
+
+// Zod schemas for Goal API endpoints
+const GoalCategorySchema = z.enum(['revenue', 'product', 'operational', 'growth', 'technical']);
+const GoalPrioritySchema = z.enum(['critical', 'high', 'medium', 'low']);
+const GoalStatusSchema = z.enum(['active', 'completed', 'paused', 'abandoned']);
+
+const GoalQuerySchema = z.object({
+  status: z.union([GoalStatusSchema, z.array(GoalStatusSchema)]).optional(),
+  category: z.union([GoalCategorySchema, z.array(GoalCategorySchema)]).optional(),
+  priority: z.union([GoalPrioritySchema, z.array(GoalPrioritySchema)]).optional(),
+  parentGoalId: z.string().uuid().optional().nullable(),
+  hasParent: z.coerce.boolean().optional(),
+  limit: z.coerce.number().min(1).max(100).optional().default(50),
+  offset: z.coerce.number().min(0).optional().default(0),
+  orderBy: z.enum(['priority', 'created_at', 'updated_at', 'target_date', 'progress_percentage']).optional().default('priority'),
+  orderDir: z.enum(['ASC', 'DESC']).optional().default('ASC'),
+});
+
+const CreateGoalSchema = z.object({
+  title: z.string().min(1).max(200),
+  description: z.string().min(1),
+  category: GoalCategorySchema,
+  priority: GoalPrioritySchema.optional().default('medium'),
+  targetMetric: z.string().max(100).optional(),
+  targetValue: z.number().min(0).optional(),
+  currentValue: z.number().min(0).optional().default(0),
+  targetDate: z.string().transform(s => new Date(s)).optional(),
+  parentGoalId: z.string().uuid().optional(),
+  relatedPatternIds: z.array(z.string().uuid()).optional(),
+});
+
+const UpdateGoalSchema = z.object({
+  title: z.string().min(1).max(200).optional(),
+  description: z.string().min(1).optional(),
+  category: GoalCategorySchema.optional(),
+  priority: GoalPrioritySchema.optional(),
+  targetMetric: z.string().max(100).optional(),
+  targetValue: z.number().min(0).optional(),
+  currentValue: z.number().min(0).optional(),
+  progressPercentage: z.number().min(0).max(100).optional(),
+  targetDate: z.string().transform(s => new Date(s)).optional().nullable(),
+  status: GoalStatusSchema.optional(),
+  parentGoalId: z.string().uuid().optional().nullable(),
+  relatedPatternIds: z.array(z.string().uuid()).optional(),
+});
+
+const UpdateProgressSchema = z.object({
+  currentValue: z.number().min(0),
+});
+
+/**
+ * List goals with optional filters
+ */
+app.get('/api/strategic/goals', async (req: Request, res: Response) => {
+  try {
+    const parseResult = GoalQuerySchema.safeParse(req.query);
+    if (!parseResult.success) {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid query parameters',
+        details: parseResult.error.issues,
+      });
+      return;
+    }
+
+    const goals = await goalManager.listGoals(parseResult.data);
+    res.json({
+      success: true,
+      goals,
+      total: goals.length,
+      limit: parseResult.data.limit,
+      offset: parseResult.data.offset,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] List goals failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Get goal statistics for dashboard
+ */
+app.get('/api/strategic/goals/stats', async (_req: Request, res: Response) => {
+  try {
+    const stats = await goalManager.getGoalStats();
+    const progress = await goalManager.calculateOverallProgress();
+    res.json({ success: true, stats, progress });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Get goal stats failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Get goal hierarchy (tree structure)
+ */
+app.get('/api/strategic/goals/hierarchy', async (req: Request, res: Response) => {
+  try {
+    const rootId = req.query.rootId as string | undefined;
+    const hierarchy = await goalManager.getGoalHierarchy(rootId);
+    res.json({ success: true, hierarchy });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Get goal hierarchy failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Get a single goal by ID
+ */
+app.get('/api/strategic/goals/:id', async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  // Validate UUID format
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(id)) {
+    res.status(400).json({ success: false, error: 'Invalid goal ID format' });
+    return;
+  }
+
+  try {
+    const goal = await goalManager.getGoal(id);
+    if (!goal) {
+      res.status(404).json({ success: false, error: 'Goal not found' });
+      return;
+    }
+
+    res.json({ success: true, goal });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Get goal failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Create a new goal
+ */
+app.post('/api/strategic/goals', async (req: Request, res: Response) => {
+  try {
+    const parseResult = CreateGoalSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid goal data',
+        details: parseResult.error.issues,
+      });
+      return;
+    }
+
+    const result = await goalManager.createGoal(parseResult.data);
+    if (!result.success) {
+      res.status(400).json({ success: false, error: result.error });
+      return;
+    }
+
+    res.status(201).json({ success: true, goal: result.goal });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Create goal failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Update a goal
+ */
+app.patch('/api/strategic/goals/:id', async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  // Validate UUID format
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(id)) {
+    res.status(400).json({ success: false, error: 'Invalid goal ID format' });
+    return;
+  }
+
+  try {
+    const parseResult = UpdateGoalSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid update data',
+        details: parseResult.error.issues,
+      });
+      return;
+    }
+
+    const result = await goalManager.updateGoal(id, parseResult.data);
+    if (!result.success) {
+      res.status(404).json({ success: false, error: result.error });
+      return;
+    }
+
+    res.json({ success: true, goal: result.goal, previousStatus: result.previousStatus });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Update goal failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Update goal progress
+ */
+app.patch('/api/strategic/goals/:id/progress', async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  // Validate UUID format
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(id)) {
+    res.status(400).json({ success: false, error: 'Invalid goal ID format' });
+    return;
+  }
+
+  try {
+    const parseResult = UpdateProgressSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid progress data',
+        details: parseResult.error.issues,
+      });
+      return;
+    }
+
+    const result = await goalManager.updateProgress(id, parseResult.data.currentValue);
+    if (!result.success) {
+      res.status(404).json({ success: false, error: result.error });
+      return;
+    }
+
+    res.json({ success: true, goal: result.goal });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Update progress failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Delete (abandon) a goal
+ */
+app.delete('/api/strategic/goals/:id', async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  // Validate UUID format
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(id)) {
+    res.status(400).json({ success: false, error: 'Invalid goal ID format' });
+    return;
+  }
+
+  try {
+    const reason = req.query.reason as string | undefined;
+    const result = await goalManager.abandonGoal(id, reason);
+    if (!result.success) {
+      res.status(404).json({ success: false, error: result.error });
+      return;
+    }
+
+    res.json({ success: true, goal: result.goal });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Delete goal failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Link a pattern to a goal
+ */
+app.post('/api/strategic/goals/:goalId/patterns/:patternId', async (req: Request, res: Response) => {
+  const { goalId, patternId } = req.params;
+
+  // Validate UUID format
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(goalId) || !uuidRegex.test(patternId)) {
+    res.status(400).json({ success: false, error: 'Invalid ID format' });
+    return;
+  }
+
+  try {
+    const result = await goalManager.linkPattern(goalId, patternId);
+    if (!result.success) {
+      res.status(404).json({ success: false, error: result.error });
+      return;
+    }
+
+    res.json({ success: true, goal: result.goal });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Link pattern failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Unlink a pattern from a goal
+ */
+app.delete('/api/strategic/goals/:goalId/patterns/:patternId', async (req: Request, res: Response) => {
+  const { goalId, patternId } = req.params;
+
+  // Validate UUID format
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(goalId) || !uuidRegex.test(patternId)) {
+    res.status(400).json({ success: false, error: 'Invalid ID format' });
+    return;
+  }
+
+  try {
+    const result = await goalManager.unlinkPattern(goalId, patternId);
+    if (!result.success) {
+      res.status(404).json({ success: false, error: result.error });
+      return;
+    }
+
+    res.json({ success: true, goal: result.goal });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Unlink pattern failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+// ==========================================
+// Strategic Layer: Recommendation Endpoints
+// ==========================================
+
+// Import recommendation engine and repository
+import { generateRecommendations, triggerRecommendationsIfNeeded } from './strategic/recommendationEngine.js';
+import * as recommendationRepository from './strategic/db/recommendationRepository.js';
+
+// Zod schemas for recommendation API endpoints
+const RecommendationQuerySchema = z.object({
+  status: z.enum(['pending', 'accepted', 'rejected', 'deferred', 'expired']).optional(),
+  priority: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+  type: z.enum(['action', 'optimization', 'warning', 'opportunity']).optional(),
+  minConfidence: z.coerce.number().min(0).max(1).optional(),
+  limit: z.coerce.number().min(1).max(100).optional().default(50),
+  offset: z.coerce.number().min(0).optional().default(0),
+  orderBy: z.enum(['created_at', 'priority', 'confidence', 'expires_at']).optional().default('priority'),
+  orderDir: z.enum(['ASC', 'DESC']).optional().default('ASC'),
+});
+
+const RecommendationGenerateSchema = z.object({
+  minPatternConfidence: z.number().min(0).max(1).optional(),
+  maxRecommendationsPerRun: z.number().min(1).max(50).optional(),
+});
+
+const RecommendationAcceptSchema = z.object({
+  feedbackText: z.string().max(1000).optional(),
+  feedbackRating: z.number().min(1).max(5).optional(),
+  triggerOrchestration: z.boolean().optional().default(false),
+});
+
+const RecommendationRejectSchema = z.object({
+  feedbackText: z.string().max(1000).optional(),
+  feedbackRating: z.number().min(1).max(5).optional(),
+});
+
+const RecommendationDeferSchema = z.object({
+  deferUntil: z.string().transform(s => new Date(s)),
+  feedbackText: z.string().max(1000).optional(),
+});
+
+/**
+ * List recommendations with optional filters
+ */
+app.get('/api/strategic/recommendations', async (req: Request, res: Response) => {
+  try {
+    const parseResult = RecommendationQuerySchema.safeParse(req.query);
+    if (!parseResult.success) {
+      res.status(400).json({ success: false, error: 'Invalid query parameters', details: parseResult.error.issues });
+      return;
+    }
+
+    const { status, priority, type, minConfidence, limit, offset, orderBy, orderDir } = parseResult.data;
+
+    const recommendations = await recommendationRepository.queryRecommendations({
+      status,
+      priority,
+      type,
+      minConfidence,
+      limit,
+      offset,
+      orderBy,
+      orderDir,
+    });
+
+    res.json({ success: true, recommendations, count: recommendations.length });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] List recommendations failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Get recommendation statistics for dashboard
+ */
+app.get('/api/strategic/recommendations/stats', async (_req: Request, res: Response) => {
+  try {
+    const stats = await recommendationRepository.getRecommendationStats();
+    res.json({ success: true, stats });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Get recommendation stats failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Get pending recommendations (priority-ordered)
+ */
+app.get('/api/strategic/recommendations/pending', async (req: Request, res: Response) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+    const recommendations = await recommendationRepository.getPendingRecommendations(limit);
+    res.json({ success: true, recommendations, count: recommendations.length });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Get pending recommendations failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Get recommendations expiring soon
+ */
+app.get('/api/strategic/recommendations/expiring', async (req: Request, res: Response) => {
+  try {
+    const withinHours = Math.min(parseInt(req.query.hours as string) || 24, 168);
+    const recommendations = await recommendationRepository.getExpiringRecommendations(withinHours);
+    res.json({ success: true, recommendations, count: recommendations.length });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Get expiring recommendations failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Get a single recommendation by ID
+ */
+app.get('/api/strategic/recommendations/:id', async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  // Validate UUID format
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    res.status(400).json({ success: false, error: 'Invalid recommendation ID format' });
+    return;
+  }
+
+  try {
+    const recommendation = await recommendationRepository.getRecommendationById(id);
+
+    if (!recommendation) {
+      res.status(404).json({ success: false, error: 'Recommendation not found' });
+      return;
+    }
+
+    res.json({ success: true, recommendation });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Get recommendation failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Manually trigger recommendation generation
+ */
+app.post('/api/strategic/recommendations/generate', async (req: Request, res: Response) => {
+  try {
+    const parseResult = RecommendationGenerateSchema.safeParse(req.body || {});
+    if (!parseResult.success) {
+      res.status(400).json({ success: false, error: 'Invalid request body', details: parseResult.error.issues });
+      return;
+    }
+
+    console.log('[API] Triggering recommendation generation...');
+    const result = await generateRecommendations(parseResult.data);
+
+    res.json({
+      success: result.success,
+      result,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Recommendation generation failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Accept a recommendation
+ */
+app.post('/api/strategic/recommendations/:id/accept', async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  // Validate UUID format
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    res.status(400).json({ success: false, error: 'Invalid recommendation ID format' });
+    return;
+  }
+
+  try {
+    const parseResult = RecommendationAcceptSchema.safeParse(req.body || {});
+    if (!parseResult.success) {
+      res.status(400).json({ success: false, error: 'Invalid request body', details: parseResult.error.issues });
+      return;
+    }
+
+    const { feedbackText, feedbackRating, triggerOrchestration } = parseResult.data;
+
+    // Get the recommendation first
+    const recommendation = await recommendationRepository.getRecommendationById(id);
+    if (!recommendation) {
+      res.status(404).json({ success: false, error: 'Recommendation not found' });
+      return;
+    }
+
+    if (recommendation.status !== 'pending') {
+      res.status(400).json({ success: false, error: `Cannot accept recommendation with status: ${recommendation.status}` });
+      return;
+    }
+
+    // Create feedback if provided
+    let feedbackId: string | undefined;
+    if (feedbackText || feedbackRating) {
+      const feedback = await recommendationRepository.insertFeedback({
+        entityType: 'recommendation',
+        entityId: id,
+        action: 'accept',
+        feedbackText,
+        feedbackRating,
+      });
+      feedbackId = feedback?.id;
+    }
+
+    // Accept the recommendation
+    const accepted = await recommendationRepository.acceptRecommendation(id, feedbackId);
+
+    if (!accepted) {
+      res.status(500).json({ success: false, error: 'Failed to accept recommendation' });
+      return;
+    }
+
+    // Optionally trigger orchestration with the suggested intent
+    let sessionId: string | undefined;
+    if (triggerOrchestration && accepted.suggested_intent) {
+      // Create orchestration session with the suggested intent
+      const session = await createOrchestrationSession({
+        sessionId: `rec-${id}-${Date.now()}`,
+        intent: accepted.suggested_intent,
+        context: {
+          urgency: accepted.priority === 'critical' ? 'high' : accepted.priority === 'high' ? 'high' : 'normal',
+        },
+      });
+      sessionId = session.sessionId;
+      console.log(`[API] Created orchestration session ${sessionId} from accepted recommendation ${id}`);
+    }
+
+    res.json({
+      success: true,
+      recommendation: accepted,
+      feedbackId,
+      sessionId,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Accept recommendation failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Reject a recommendation
+ */
+app.post('/api/strategic/recommendations/:id/reject', async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  // Validate UUID format
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    res.status(400).json({ success: false, error: 'Invalid recommendation ID format' });
+    return;
+  }
+
+  try {
+    const parseResult = RecommendationRejectSchema.safeParse(req.body || {});
+    if (!parseResult.success) {
+      res.status(400).json({ success: false, error: 'Invalid request body', details: parseResult.error.issues });
+      return;
+    }
+
+    const { feedbackText, feedbackRating } = parseResult.data;
+
+    // Get the recommendation first
+    const recommendation = await recommendationRepository.getRecommendationById(id);
+    if (!recommendation) {
+      res.status(404).json({ success: false, error: 'Recommendation not found' });
+      return;
+    }
+
+    if (recommendation.status !== 'pending') {
+      res.status(400).json({ success: false, error: `Cannot reject recommendation with status: ${recommendation.status}` });
+      return;
+    }
+
+    // Create feedback if provided
+    let feedbackId: string | undefined;
+    if (feedbackText || feedbackRating) {
+      const feedback = await recommendationRepository.insertFeedback({
+        entityType: 'recommendation',
+        entityId: id,
+        action: 'reject',
+        feedbackText,
+        feedbackRating,
+      });
+      feedbackId = feedback?.id;
+    }
+
+    // Reject the recommendation
+    const rejected = await recommendationRepository.rejectRecommendation(id, feedbackId);
+
+    if (!rejected) {
+      res.status(500).json({ success: false, error: 'Failed to reject recommendation' });
+      return;
+    }
+
+    res.json({
+      success: true,
+      recommendation: rejected,
+      feedbackId,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Reject recommendation failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Defer a recommendation
+ */
+app.post('/api/strategic/recommendations/:id/defer', async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  // Validate UUID format
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    res.status(400).json({ success: false, error: 'Invalid recommendation ID format' });
+    return;
+  }
+
+  try {
+    const parseResult = RecommendationDeferSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({ success: false, error: 'Invalid request body', details: parseResult.error.issues });
+      return;
+    }
+
+    const { deferUntil, feedbackText } = parseResult.data;
+
+    // Get the recommendation first
+    const recommendation = await recommendationRepository.getRecommendationById(id);
+    if (!recommendation) {
+      res.status(404).json({ success: false, error: 'Recommendation not found' });
+      return;
+    }
+
+    if (recommendation.status !== 'pending') {
+      res.status(400).json({ success: false, error: `Cannot defer recommendation with status: ${recommendation.status}` });
+      return;
+    }
+
+    // Create feedback if provided
+    let feedbackId: string | undefined;
+    if (feedbackText) {
+      const feedback = await recommendationRepository.insertFeedback({
+        entityType: 'recommendation',
+        entityId: id,
+        action: 'defer',
+        feedbackText,
+      });
+      feedbackId = feedback?.id;
+    }
+
+    // Defer the recommendation
+    const deferred = await recommendationRepository.deferRecommendation(id, deferUntil, feedbackId);
+
+    if (!deferred) {
+      res.status(500).json({ success: false, error: 'Failed to defer recommendation' });
+      return;
+    }
+
+    res.json({
+      success: true,
+      recommendation: deferred,
+      feedbackId,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Defer recommendation failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Get feedback for a recommendation
+ */
+app.get('/api/strategic/recommendations/:id/feedback', async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  // Validate UUID format
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    res.status(400).json({ success: false, error: 'Invalid recommendation ID format' });
+    return;
+  }
+
+  try {
+    const feedback = await recommendationRepository.getFeedbackForEntity('recommendation', id);
+    res.json({ success: true, feedback });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Get feedback failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+/**
+ * Get feedback statistics
+ */
+app.get('/api/strategic/feedback/stats', async (_req: Request, res: Response) => {
+  try {
+    const stats = await recommendationRepository.getFeedbackStats();
+    res.json({ success: true, stats });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[API] Get feedback stats failed:', errorMessage);
+    res.status(500).json({ success: false, error: errorMessage });
   }
 });
 

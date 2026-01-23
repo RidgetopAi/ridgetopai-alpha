@@ -7,6 +7,7 @@ import { QueueView } from './components/queue';
 import { WorkflowView } from './components/workflow';
 import { ContextView } from './components/context';
 import { HistoryView } from './components/history';
+import { GoalsPanel, RecommendationsPanel } from './components/strategic';
 import { CommandInputOverlay } from './components/overlays/CommandInputOverlay';
 import { useUIStore } from './stores/ui-store';
 import { useOrchestrationStore } from './stores/orchestration-store';
@@ -33,6 +34,10 @@ function App() {
         return <ContextView />;
       case 'history':
         return <HistoryView />;
+      case 'goals':
+        return <GoalsPanel />;
+      case 'recommendations':
+        return <RecommendationsPanel />;
       default:
         return <DashboardView />;
     }

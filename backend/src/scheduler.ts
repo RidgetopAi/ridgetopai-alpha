@@ -7,12 +7,18 @@ import * as cron from 'node-cron';
 import { randomUUID } from 'crypto';
 import { query } from './db.js';
 import { createOrchestrationSession, dispatchAllTasks } from './orchestrator.js';
+import { analyzePatterns } from './strategic/patternAnalyzer.js';
+import { generateRecommendations } from './strategic/recommendationEngine.js';
 import type {
   ScheduledTaskRuntime,
   CreateScheduleRequest,
   UpdateScheduleRequest,
   TriggerExecutionResult
 } from './types.js';
+
+// Strategic Layer cron job references
+let patternAnalysisJob: cron.ScheduledTask | null = null;
+let recommendationGenerationJob: cron.ScheduledTask | null = null;
 
 // In-memory cache of active cron jobs
 const activeJobs = new Map<string, cron.ScheduledTask>();
@@ -62,6 +68,64 @@ export async function initializeScheduler(): Promise<void> {
     dbAvailable = false;
     console.log('[Scheduler] Database unavailable, running in memory-only mode');
   }
+
+  // Initialize Strategic Layer pattern analysis cron job
+  // Runs daily at 6:00 AM UTC
+  initializePatternAnalysisJob();
+
+  // Initialize Strategic Layer recommendation generation cron job
+  // Runs daily at 7:00 AM UTC (after pattern analysis)
+  initializeRecommendationGenerationJob();
+}
+
+/**
+ * Initialize the pattern analysis cron job for Strategic Layer Phase 2
+ * Runs daily at 6:00 AM UTC
+ */
+function initializePatternAnalysisJob(): void {
+  if (patternAnalysisJob) {
+    patternAnalysisJob.stop();
+  }
+
+  patternAnalysisJob = cron.schedule('0 6 * * *', async () => {
+    console.log('[Scheduler] Running scheduled pattern analysis...');
+    try {
+      const result = await analyzePatterns();
+      console.log(`[Scheduler] Pattern analysis complete: ${result.patternsDetected} detected, ${result.patternsUpdated} updated`);
+    } catch (error) {
+      console.error('[Scheduler] Pattern analysis failed:', error);
+    }
+  }, {
+    scheduled: true,
+    timezone: 'UTC',
+  });
+
+  console.log('[Scheduler] Strategic Layer pattern analysis scheduled for 6:00 AM UTC');
+}
+
+/**
+ * Initialize the recommendation generation cron job for Strategic Layer Phase 4
+ * Runs daily at 7:00 AM UTC (1 hour after pattern analysis)
+ */
+function initializeRecommendationGenerationJob(): void {
+  if (recommendationGenerationJob) {
+    recommendationGenerationJob.stop();
+  }
+
+  recommendationGenerationJob = cron.schedule('0 7 * * *', async () => {
+    console.log('[Scheduler] Running scheduled recommendation generation...');
+    try {
+      const result = await generateRecommendations();
+      console.log(`[Scheduler] Recommendation generation complete: ${result.recommendationsCreated} created from ${result.patternsAnalyzed} patterns and ${result.goalsConsidered} goals`);
+    } catch (error) {
+      console.error('[Scheduler] Recommendation generation failed:', error);
+    }
+  }, {
+    scheduled: true,
+    timezone: 'UTC',
+  });
+
+  console.log('[Scheduler] Strategic Layer recommendation generation scheduled for 7:00 AM UTC');
 }
 
 /**
@@ -470,6 +534,21 @@ export function stopAllJobs(): void {
     console.log(`[Scheduler] Stopped job: ${id}`);
   }
   activeJobs.clear();
+
+  // Stop Strategic Layer pattern analysis job
+  if (patternAnalysisJob) {
+    patternAnalysisJob.stop();
+    patternAnalysisJob = null;
+    console.log('[Scheduler] Stopped pattern analysis job');
+  }
+
+  // Stop Strategic Layer recommendation generation job
+  if (recommendationGenerationJob) {
+    recommendationGenerationJob.stop();
+    recommendationGenerationJob = null;
+    console.log('[Scheduler] Stopped recommendation generation job');
+  }
+
   console.log('[Scheduler] All jobs stopped');
 }
 

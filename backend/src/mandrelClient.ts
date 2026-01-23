@@ -12,6 +12,12 @@
  */
 
 import type { BugReport, BugAnalysis, ContentBrief, ContentGenerationResult, SupportTicket, TicketAnalysis, MonitoringAlert, AlertAnalysis } from './types.js';
+import {
+  recordBugfixCompletion,
+  recordContentCompletion,
+  recordTicketCompletion,
+  recordAlertCompletion,
+} from './strategic/strategicObserver.js';
 
 // Configuration
 // Default to the public Mandrel URL on VPS - can be overridden for local development
@@ -194,6 +200,19 @@ export async function storeWorkflowCompletion(
 
   if (response?.success) {
     console.log(`[MandrelClient] Workflow ${completion.stage || 'completion'} stored successfully (type: ${contextType})`);
+
+    // Record observation for Strategic Layer (Phase 1)
+    // Fire-and-forget: don't block the workflow completion
+    if (completion.type === 'bugfix') {
+      recordBugfixCompletion(completion).catch(err => {
+        console.error('[MandrelClient] Failed to record bugfix observation:', err);
+      });
+    } else if (completion.type === 'content') {
+      recordContentCompletion(completion).catch(err => {
+        console.error('[MandrelClient] Failed to record content observation:', err);
+      });
+    }
+
     return true;
   }
 
@@ -494,6 +513,23 @@ export async function storeDecision(
 }
 
 /**
+ * Store a milestone context to Mandrel
+ * Used by Strategic Layer for goal lifecycle events
+ */
+export async function storeMilestoneContext(
+  content: string,
+  tags: string[] = []
+): Promise<boolean> {
+  const response = await callMandrelTool<StoreResponse>('context_store', {
+    content,
+    type: 'milestone' as MandrelContextType,
+    tags: ['ridgetopai-alpha', ...tags],
+  });
+
+  return response?.success === true;
+}
+
+/**
  * Build context augmentation for support ticket analysis prompts
  */
 export async function getContextForTicketAnalysis(
@@ -557,6 +593,13 @@ export async function storeTicketCompletion(
 
   if (response?.success) {
     console.log(`[MandrelClient] Ticket completion stored successfully`);
+
+    // Record observation for Strategic Layer (Phase 1)
+    // Fire-and-forget: don't block the workflow completion
+    recordTicketCompletion(completion).catch(err => {
+      console.error('[MandrelClient] Failed to record ticket observation:', err);
+    });
+
     return true;
   }
 
@@ -678,6 +721,13 @@ export async function storeAlertCompletion(
 
   if (response?.success) {
     console.log(`[MandrelClient] Alert completion stored successfully`);
+
+    // Record observation for Strategic Layer (Phase 1)
+    // Fire-and-forget: don't block the workflow completion
+    recordAlertCompletion(completion).catch(err => {
+      console.error('[MandrelClient] Failed to record alert observation:', err);
+    });
+
     return true;
   }
 
