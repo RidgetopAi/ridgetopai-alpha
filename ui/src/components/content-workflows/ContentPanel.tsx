@@ -40,6 +40,93 @@ export function ContentPanel() {
     }
   };
 
+  // Download content as file
+  const handleDownload = (workflow: ContentWorkflow, format: 'markdown' | 'html' | 'plain') => {
+    const content = workflow.finalContent?.content || workflow.generation?.content;
+    if (!content) return;
+
+    let fileContent: string;
+    let filename: string;
+    let mimeType: string;
+
+    const sanitizedTitle = content.title.replace(/[^a-z0-9]/gi, '-').toLowerCase();
+
+    switch (format) {
+      case 'markdown':
+        fileContent = `# ${content.title}\n\n${content.body}`;
+        if (content.callToAction) {
+          fileContent += `\n\n---\n\n**${content.callToAction}**`;
+        }
+        filename = `${sanitizedTitle}.md`;
+        mimeType = 'text/markdown';
+        break;
+
+      case 'html':
+        // Convert markdown-style content to basic HTML
+        const htmlBody = content.body
+          .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+          .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+          .replace(/^\*\*(.+)\*\*$/gm, '<p><strong>$1</strong></p>')
+          .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+          .replace(/^- (.+)$/gm, '<li>$1</li>')
+          .replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>')
+          .replace(/\n\n/g, '</p><p>')
+          .replace(/^(?!<[huplo])/gm, '<p>')
+          .replace(/(?<![>])$/gm, '</p>');
+
+        fileContent = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${content.title}</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; line-height: 1.6; }
+    h1 { color: #1a1a1a; }
+    h2, h3 { color: #333; margin-top: 2rem; }
+    p { color: #444; }
+    ul { padding-left: 1.5rem; }
+    .cta { margin-top: 2rem; padding: 1rem; background: #f0f0f0; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <h1>${content.title}</h1>
+  ${htmlBody}
+  ${content.callToAction ? `<div class="cta"><strong>${content.callToAction}</strong></div>` : ''}
+</body>
+</html>`;
+        filename = `${sanitizedTitle}.html`;
+        mimeType = 'text/html';
+        break;
+
+      case 'plain':
+        // Strip markdown formatting for plain text
+        fileContent = `${content.title.toUpperCase()}\n${'='.repeat(content.title.length)}\n\n`;
+        fileContent += content.body
+          .replace(/^#{1,6}\s+/gm, '')
+          .replace(/\*\*(.+?)\*\*/g, '$1')
+          .replace(/\*(.+?)\*/g, '$1')
+          .replace(/^- /gm, '• ');
+        if (content.callToAction) {
+          fileContent += `\n\n---\n\n${content.callToAction}`;
+        }
+        filename = `${sanitizedTitle}.txt`;
+        mimeType = 'text/plain';
+        break;
+    }
+
+    // Create and trigger download
+    const blob = new Blob([fileContent], { type: `${mimeType};charset=utf-8` });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   // Render the workflow detail view
   const renderWorkflowDetail = (workflow: ContentWorkflow) => {
     return (
@@ -148,11 +235,28 @@ export function ContentPanel() {
                   {workflow.finalContent.content.metadata?.wordCount || 0} words
                 </span>
                 <div className="flex gap-2">
-                  {workflow.finalContent.exportFormats?.map((format) => (
-                    <span key={format} className="px-2 py-1 bg-gray-700 text-gray-300 rounded text-xs">
-                      {format.toUpperCase()}
-                    </span>
-                  ))}
+                  <span className="text-xs text-gray-500">Download:</span>
+                  <button
+                    onClick={() => handleDownload(workflow, 'markdown')}
+                    className="px-2 py-1 bg-gray-700 text-gray-300 rounded text-xs hover:bg-green-600 hover:text-white transition-colors"
+                    title="Download as Markdown"
+                  >
+                    .MD
+                  </button>
+                  <button
+                    onClick={() => handleDownload(workflow, 'html')}
+                    className="px-2 py-1 bg-gray-700 text-gray-300 rounded text-xs hover:bg-green-600 hover:text-white transition-colors"
+                    title="Download as HTML"
+                  >
+                    .HTML
+                  </button>
+                  <button
+                    onClick={() => handleDownload(workflow, 'plain')}
+                    className="px-2 py-1 bg-gray-700 text-gray-300 rounded text-xs hover:bg-green-600 hover:text-white transition-colors"
+                    title="Download as Plain Text"
+                  >
+                    .TXT
+                  </button>
                 </div>
               </div>
 
