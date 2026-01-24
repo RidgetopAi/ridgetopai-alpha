@@ -93,6 +93,7 @@ export interface SupportTicketWorkflow {
     message: string;
     step: TicketWorkflowState;
     occurredAt: Date;
+    timedOut?: boolean; // True if the error was due to a timeout
   };
 }
 
@@ -162,3 +163,19 @@ export function isTicketStateActiveOrComplete(current: TicketWorkflowState, step
   const stepIndex = TICKET_STATE_ORDER.indexOf(step);
   return currentIndex >= stepIndex;
 }
+
+// Helper to detect if an error is a timeout
+export function isTicketTimeoutError(error: string | undefined): boolean {
+  if (!error) return false;
+  const lowerError = error.toLowerCase();
+  return lowerError.includes('timed out') ||
+         lowerError.includes('timeout') ||
+         lowerError.includes('time out');
+}
+
+// Processing states that could indicate a stuck/orphaned workflow
+export const TICKET_PROCESSING_STATES: TicketWorkflowState[] = [
+  'submitted',
+  'analyzing',
+  'responding',
+];

@@ -12,11 +12,13 @@
  */
 
 import type { BugReport, BugAnalysis, ContentBrief, ContentGenerationResult, SupportTicket, TicketAnalysis, MonitoringAlert, AlertAnalysis } from './types.js';
+import type { OrchestrationSession, GeneratedTask } from './orchestrator.js';
 import {
   recordBugfixCompletion,
   recordContentCompletion,
   recordTicketCompletion,
   recordAlertCompletion,
+  recordOrchestrationCompletion,
 } from './strategic/strategicObserver.js';
 
 // Configuration
@@ -77,6 +79,38 @@ export interface AlertCompletion {
     action: string;
     notes?: string;
     executedAt: Date;
+  };
+  completedAt: Date;
+}
+
+// Structure for storing orchestration completions
+export interface OrchestrationCompletion {
+  type: 'orchestration';
+  capability: 'COMMAND';
+  sessionId: string;
+  intent: string;
+  context?: {
+    focus?: string;
+    urgency?: 'high' | 'normal' | 'low';
+    constraints?: string;
+  };
+  interpretation: {
+    understood: string;
+    reasoning: string;
+    warnings?: string[];
+  };
+  tasks: Array<{
+    id: string;
+    type: string;
+    title: string;
+    status: string;
+    result?: unknown;
+    error?: string;
+  }>;
+  execution: {
+    total: number;
+    completed: number;
+    failed: number;
   };
   completedAt: Date;
 }
@@ -783,4 +817,137 @@ ${completion.remediation.notes ? `Notes: ${completion.remediation.notes}` : ''}
 
 ## Internal Notes
 ${output.internalNotes}`;
+}
+
+/**
+ * Build context augmentation for orchestration intent analysis prompts
+ * Searches for similar past orchestration sessions to inform task generation
+ */
+export async function getContextForOrchestration(
+  intent: string,
+  focus?: string
+): Promise<string> {
+  // Search for similar orchestration sessions and strategic decisions
+  const query = `orchestration ${focus || ''} ${intent.substring(0, 100)}`;
+  const contexts = await searchRelevantContext(query, {
+    type: 'completion',
+    limit: 3,
+  });
+
+  if (contexts.length === 0) {
+    return '';
+  }
+
+  // Build context section for prompt
+  return `
+## Relevant Previous Orchestrations (from institutional memory)
+
+The following past orchestration sessions may be relevant:
+
+${contexts.map((c, i) => `### Previous Session ${i + 1}
+${c.content.substring(0, 500)}${c.content.length > 500 ? '...' : ''}
+`).join('\n')}
+
+Consider whether these past sessions provide insights for task decomposition.
+`;
+}
+
+/**
+ * Store a completed orchestration session to Mandrel
+ */
+export async function storeOrchestrationCompletion(
+  completion: OrchestrationCompletion
+): Promise<boolean> {
+  console.log(`[MandrelClient] Storing orchestration completion: ${completion.sessionId}`);
+
+  // Build a human-readable summary for the content
+  const summary = buildOrchestrationCompletionSummary(completion);
+
+  // Build tags for searchability
+  const tags = [
+    'workflow',
+    'orchestration',
+    'command',
+    'ridgetopai-alpha',
+  ];
+
+  if (completion.context?.focus) {
+    tags.push(`focus-${completion.context.focus}`);
+  }
+
+  if (completion.context?.urgency) {
+    tags.push(`urgency-${completion.context.urgency}`);
+  }
+
+  // Add task type tags
+  const taskTypes = [...new Set(completion.tasks.map(t => t.type))];
+  taskTypes.forEach(type => tags.push(`task-${type}`));
+
+  // Add outcome tags
+  if (completion.execution.failed > 0) {
+    tags.push('has-failures');
+  }
+  if (completion.execution.completed === completion.execution.total) {
+    tags.push('all-completed');
+  }
+
+  const response = await callMandrelTool<StoreResponse>('context_store', {
+    content: summary,
+    type: 'completion' as MandrelContextType,
+    tags,
+  });
+
+  if (response?.success) {
+    console.log(`[MandrelClient] Orchestration completion stored successfully`);
+
+    // Record observation for Strategic Layer (Phase 1)
+    // Fire-and-forget: don't block the workflow completion
+    recordOrchestrationCompletion(completion).catch(err => {
+      console.error('[MandrelClient] Failed to record orchestration observation:', err);
+    });
+
+    return true;
+  }
+
+  console.error(`[MandrelClient] Failed to store orchestration completion`);
+  return false;
+}
+
+/**
+ * Build a human-readable summary of an orchestration completion
+ */
+function buildOrchestrationCompletionSummary(completion: OrchestrationCompletion): string {
+  const timestamp = completion.completedAt.toISOString();
+
+  const taskSummaries = completion.tasks.map((task, i) => {
+    const status = task.status === 'completed' ? '✓' : task.status === 'failed' ? '✗' : '○';
+    const error = task.error ? ` (Error: ${task.error})` : '';
+    return `  ${i + 1}. [${status}] ${task.title} (${task.type})${error}`;
+  }).join('\n');
+
+  return `WORKFLOW COMPLETION: Orchestration Session
+Capability: ${completion.capability}
+SessionId: ${completion.sessionId}
+CompletedAt: ${timestamp}
+
+## Original Intent
+"${completion.intent}"
+
+## Context
+Focus: ${completion.context?.focus || 'auto-detect'}
+Urgency: ${completion.context?.urgency || 'normal'}
+${completion.context?.constraints ? `Constraints: ${completion.context.constraints}` : ''}
+
+## AI Interpretation
+Understood: ${completion.interpretation.understood}
+Reasoning: ${completion.interpretation.reasoning}
+${completion.interpretation.warnings?.length ? `Warnings: ${completion.interpretation.warnings.join('; ')}` : ''}
+
+## Tasks Generated (${completion.execution.total} total)
+${taskSummaries}
+
+## Execution Summary
+Completed: ${completion.execution.completed}
+Failed: ${completion.execution.failed}
+Success Rate: ${completion.execution.total > 0 ? Math.round((completion.execution.completed / completion.execution.total) * 100) : 0}%`;
 }

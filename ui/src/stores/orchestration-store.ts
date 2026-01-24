@@ -20,6 +20,7 @@ import {
   getOrchestrationSession,
   executeOrchestrationTasks,
   listOrchestrationSessions,
+  cancelOrchestrationSession,
 } from '../lib/api/orchestrator';
 
 interface OrchestrationStore {
@@ -33,6 +34,7 @@ interface OrchestrationStore {
   // Actions - Session Lifecycle
   createSession: (intent: string, context?: OrchestrationSession['context']) => Promise<void>;
   executeSession: () => Promise<void>;
+  cancelSession: () => Promise<void>;
   refreshSession: () => Promise<void>;
   selectSession: (sessionId: string | null) => void;
   clearError: () => void;
@@ -131,10 +133,13 @@ export const useOrchestrationStore = create<OrchestrationStore>((set, get) => ({
         // Start polling for updates
         get().refreshSession();
 
-        // Poll until complete
+        // Poll until complete or cancelled
         const pollInterval = setInterval(async () => {
           const current = get().activeSession;
-          if (!current) {
+          const currentState = get().sessionState;
+
+          // Stop polling if session is gone or cancelled
+          if (!current || currentState === 'cancelled') {
             clearInterval(pollInterval);
             return;
           }
@@ -142,17 +147,33 @@ export const useOrchestrationStore = create<OrchestrationStore>((set, get) => ({
           await get().refreshSession();
 
           const updated = get().activeSession;
+          const updatedState = get().sessionState;
+
+          // Check again after refresh
+          if (updatedState === 'cancelled') {
+            clearInterval(pollInterval);
+            return;
+          }
+
           if (updated) {
             const { execution } = updated;
             const allDone = execution.pending === 0 && execution.running === 0;
 
             if (allDone) {
               clearInterval(pollInterval);
+              // Determine final state based on what happened
+              let finalState: SessionState = 'completed';
+              if (updated.isCancelled || execution.cancelled > 0) {
+                finalState = execution.failed > 0 ? 'failed' :
+                            execution.completed === 0 ? 'cancelled' : 'completed';
+              } else if (execution.failed > 0) {
+                finalState = 'failed';
+              }
               set({
-                sessionState: execution.failed > 0 ? 'failed' : 'completed',
+                sessionState: finalState,
                 isLoading: false,
               });
-              console.log('[OrchestrationStore] Execution complete');
+              console.log('[OrchestrationStore] Execution complete, final state:', finalState);
             }
           }
         }, 2000);
@@ -181,6 +202,50 @@ export const useOrchestrationStore = create<OrchestrationStore>((set, get) => ({
         isLoading: false,
       });
       console.error('[OrchestrationStore] Error:', errorMessage);
+    }
+  },
+
+  cancelSession: async () => {
+    const session = get().activeSession;
+    if (!session) {
+      set({ error: 'No active session' });
+      return;
+    }
+
+    set({ isLoading: true, error: null });
+
+    try {
+      console.log('[OrchestrationStore] Cancelling session:', session.sessionId);
+
+      const response = await cancelOrchestrationSession(session.sessionId);
+
+      if (response.success && response.session) {
+        const updatedSession = response.session;
+
+        set((state) => ({
+          activeSession: updatedSession,
+          sessions: state.sessions.map((s) =>
+            s.sessionId === session.sessionId ? updatedSession : s
+          ),
+          sessionState: 'cancelled',
+          isLoading: false,
+        }));
+
+        console.log('[OrchestrationStore] Session cancelled:', response.message);
+      } else {
+        set({
+          error: response.error || 'Cancel failed',
+          isLoading: false,
+        });
+        console.error('[OrchestrationStore] Cancel failed:', response.error);
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      set({
+        error: errorMessage,
+        isLoading: false,
+      });
+      console.error('[OrchestrationStore] Cancel error:', errorMessage);
     }
   },
 

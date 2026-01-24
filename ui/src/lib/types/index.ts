@@ -39,7 +39,9 @@ export type ViewMode =
   | 'context'
   | 'history'
   | 'goals'
-  | 'recommendations';
+  | 'recommendations'
+  | 'scheduler'
+  | 'triggers';
 
 export interface Command {
   id: string;

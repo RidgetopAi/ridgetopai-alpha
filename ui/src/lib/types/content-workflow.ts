@@ -189,6 +189,7 @@ export interface ContentWorkflow {
     message: string;
     step: ContentWorkflowState;
     occurredAt: Date;
+    timedOut?: boolean; // True if the error was due to a timeout
   };
 }
 
@@ -270,3 +271,20 @@ export function isContentStateActiveOrComplete(current: ContentWorkflowState, st
   const stepIndex = CONTENT_STATE_ORDER.indexOf(step);
   return currentIndex >= stepIndex;
 }
+
+// Helper to detect if an error is a timeout
+export function isContentTimeoutError(error: string | undefined): boolean {
+  if (!error) return false;
+  const lowerError = error.toLowerCase();
+  return lowerError.includes('timed out') ||
+         lowerError.includes('timeout') ||
+         lowerError.includes('time out');
+}
+
+// Processing states that could indicate a stuck/orphaned workflow
+export const CONTENT_PROCESSING_STATES: ContentWorkflowState[] = [
+  'submitted',
+  'researching',
+  'generating',
+  'refining',
+];

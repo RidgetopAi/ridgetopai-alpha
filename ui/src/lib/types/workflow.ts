@@ -134,6 +134,7 @@ export interface BugFixWorkflow {
     message: string;
     step: WorkflowState;
     occurredAt: Date;
+    timedOut?: boolean; // True if the error was due to a timeout
   };
 }
 
@@ -177,3 +178,23 @@ export function isStateActiveOrComplete(current: WorkflowState, step: WorkflowSt
   const stepIndex = WORKFLOW_STATE_ORDER.indexOf(step);
   return currentIndex >= stepIndex;
 }
+
+// Helper to detect if an error is a timeout
+export function isTimeoutError(error: string | undefined): boolean {
+  if (!error) return false;
+  const lowerError = error.toLowerCase();
+  return lowerError.includes('timed out') ||
+         lowerError.includes('timeout') ||
+         lowerError.includes('time out');
+}
+
+// Processing states that could indicate a stuck/orphaned workflow
+export const PROCESSING_STATES: WorkflowState[] = [
+  'submitted',
+  'analyzing',
+  'implementing',
+  'verifying',
+];
+
+// Default timeout in milliseconds (6 minutes - slightly more than backend 5 min to account for network)
+export const CLIENT_TIMEOUT_MS = 6 * 60 * 1000;

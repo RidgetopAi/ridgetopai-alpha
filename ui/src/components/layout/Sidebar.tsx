@@ -1,4 +1,4 @@
-import { LayoutDashboard, ListTodo, GitBranch, Database, History, Bot, Target, Lightbulb } from 'lucide-react';
+import { LayoutDashboard, ListTodo, GitBranch, Database, History, Bot, Target, Lightbulb, Calendar, Zap } from 'lucide-react';
 import { useEffect } from 'react';
 import type { ViewMode } from '../../lib/types';
 import { useUIStore } from '../../stores/ui-store';
@@ -43,6 +43,8 @@ export function Sidebar() {
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'queue', label: 'Queue', icon: ListTodo, badge: queue.length || undefined },
     { id: 'workflow', label: 'Workflow', icon: GitBranch },
+    { id: 'scheduler', label: 'Scheduler', icon: Calendar },
+    { id: 'triggers', label: 'Triggers', icon: Zap },
     { id: 'context', label: 'Context', icon: Database },
     { id: 'history', label: 'History', icon: History, badge: completedToday || undefined },
     { id: 'goals', label: 'Goals', icon: Target, badge: overdueGoals || undefined },

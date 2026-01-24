@@ -29,7 +29,18 @@ import { runBugAnalysis, runImplementation, checkClaudeAvailable, storeBugFixCom
 import { runContentGeneration, runContentRefinement, storeContentCompletion } from './contentRunner.js';
 import { runTicketAnalysis, storeTicketWorkflowCompletion } from './supportTicketRunner.js';
 import { runAlertAnalysis, storeAlertWorkflowCompletion } from './monitoringAlertRunner.js';
-import { checkMandrelAvailable, searchRelevantContext, getRecentWorkflows } from './mandrelClient.js';
+import {
+  startRemediation,
+  runDryRun,
+  executeStep,
+  executeAllSteps,
+  approveSteps,
+  cancelRemediation,
+  getRemediation,
+  generateRemediationSummary,
+  type RemediationExecution,
+} from './remediationExecutor.js';
+import { checkMandrelAvailable } from './mandrelClient.js';
 import {
   OrchestrationRequestSchema,
   createOrchestrationSession,
@@ -37,6 +48,7 @@ import {
   getAllSessions,
   dispatchAllTasks,
   updateTaskStatus,
+  cancelOrchestrationSession,
 } from './orchestrator.js';
 import {
   initializeScheduler,
@@ -77,6 +89,8 @@ import * as patternRepository from './strategic/db/patternRepository.js';
 import { z } from 'zod';
 // Image generation service
 import { isImageGenerationAvailable } from './imageService.js';
+// Email service for support ticket responses
+import { isEmailConfigured, sendSupportResponse } from './emailService.js';
 
 // Zod schemas for pattern API endpoints
 const PatternQuerySchema = z.object({
@@ -151,6 +165,7 @@ app.get('/health', async (_req: Request, res: Response) => {
     mandrelAvailable,
     databaseAvailable: isDatabaseAvailable(),
     imageGenerationAvailable: isImageGenerationAvailable(),
+    emailConfigured: isEmailConfigured(),
   });
 });
 
@@ -731,60 +746,6 @@ app.post('/api/mandrel/content/:id/complete', async (req: Request, res: Response
   }
 });
 
-/**
- * Search Mandrel for relevant context
- */
-app.post('/api/mandrel/search', async (req: Request, res: Response) => {
-  const { query, type, limit } = req.body;
-
-  if (!query) {
-    res.status(400).json({ error: 'query is required' });
-    return;
-  }
-
-  console.log(`[API] Searching Mandrel: ${query.substring(0, 50)}...`);
-
-  try {
-    const contexts = await searchRelevantContext(query, { type, limit });
-    res.json({
-      success: true,
-      query,
-      count: contexts.length,
-      contexts,
-    });
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    res.status(500).json({
-      success: false,
-      error: errorMessage,
-    });
-  }
-});
-
-/**
- * Get recent workflow completions from Mandrel
- */
-app.get('/api/mandrel/recent', async (req: Request, res: Response) => {
-  const limit = parseInt(req.query.limit as string) || 10;
-
-  console.log(`[API] Getting ${limit} recent workflows from Mandrel`);
-
-  try {
-    const workflows = await getRecentWorkflows(limit);
-    res.json({
-      success: true,
-      count: workflows.length,
-      workflows,
-    });
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    res.status(500).json({
-      success: false,
-      error: errorMessage,
-    });
-  }
-});
-
 // ==========================================
 // Mandrel Context Proxy Endpoints (for UI)
 // ==========================================
@@ -1016,12 +977,14 @@ app.post("/api/mandrel/projects/switch", async (req: Request, res: Response) => 
 // ==========================================
 
 // In-memory support ticket workflow status
+import type { SupportTicket } from './types.js';
 const ticketWorkflowStatus = new Map<string, {
   workflowId: string;
   status: TicketWorkflowStatus;
   message?: string;
   progress?: number;
   result?: TicketAnalysis;
+  ticket?: SupportTicket;  // Store ticket for email sending
 }>();
 
 /**
@@ -1066,12 +1029,13 @@ app.post('/api/workflow/support', async (req: Request, res: Response) => {
   console.log(`[API] Ticket: ${ticket.title} (${ticket.category})`);
   console.log(`[API] Customer: ${ticket.customerEmail}`);
 
-  // Update status: analyzing
+  // Update status: analyzing (include ticket for later email sending)
   ticketWorkflowStatus.set(workflowId, {
     workflowId,
     status: 'analyzing',
     message: 'AI is analyzing the support ticket...',
     progress: 25,
+    ticket,
   });
 
   try {
@@ -1082,13 +1046,14 @@ app.post('/api/workflow/support', async (req: Request, res: Response) => {
     });
 
     if (result.success && result.data) {
-      // Update status: completed
+      // Update status: completed (preserve ticket for email sending)
       ticketWorkflowStatus.set(workflowId, {
         workflowId,
         status: 'completed',
         message: 'Analysis complete',
         progress: 100,
         result: result.data,
+        ticket,
       });
 
       console.log(`[API] Support ticket workflow completed: ${workflowId}`);
@@ -1102,11 +1067,12 @@ app.post('/api/workflow/support', async (req: Request, res: Response) => {
         durationMs: result.durationMs,
       });
     } else {
-      // Update status: failed
+      // Update status: failed (preserve ticket for retry)
       ticketWorkflowStatus.set(workflowId, {
         workflowId,
         status: 'failed',
         message: result.error || 'Analysis failed',
+        ticket,
       });
 
       console.error(`[API] Support ticket workflow failed: ${workflowId}`);
@@ -1126,6 +1092,7 @@ app.post('/api/workflow/support', async (req: Request, res: Response) => {
       workflowId,
       status: 'failed',
       message: errorMessage,
+      ticket,
     });
 
     console.error(`[API] Unexpected error in support ticket workflow: ${errorMessage}`);
@@ -1181,17 +1148,44 @@ app.post('/api/workflow/support/:id/respond', async (req: Request, res: Response
   });
 
   try {
-    // Note: Email sending would be implemented here in production
-    // For now, we just record the response
+    let emailSent = false;
+    let emailError: string | undefined;
+
+    // Send email to customer if requested
     if (sendEmail) {
-      console.log(`[API] Would send email to customer (not implemented)`);
+      if (!isEmailConfigured()) {
+        console.warn(`[API] Email sending requested but SMTP not configured`);
+        emailError = 'Email service not configured';
+      } else {
+        const ticket = status.ticket;
+        if (ticket) {
+          const emailResult = await sendSupportResponse(
+            ticket.customerEmail,
+            ticket.customerName,
+            ticket.title,
+            response,
+            workflowId
+          );
+
+          if (emailResult.success) {
+            emailSent = true;
+            console.log(`[API] Email sent to ${ticket.customerEmail}, messageId: ${emailResult.messageId}`);
+          } else {
+            emailError = emailResult.error;
+            console.error(`[API] Failed to send email: ${emailResult.error}`);
+          }
+        } else {
+          emailError = 'Ticket data not available';
+          console.warn(`[API] Cannot send email - ticket data not in workflow status`);
+        }
+      }
     }
 
     // Update status: completed
     ticketWorkflowStatus.set(workflowId, {
       ...status,
       status: 'completed',
-      message: 'Response recorded',
+      message: emailSent ? 'Response sent to customer' : 'Response recorded',
       progress: 100,
     });
 
@@ -1200,7 +1194,9 @@ app.post('/api/workflow/support/:id/respond', async (req: Request, res: Response
     res.json({
       success: true,
       workflowId,
-      message: sendEmail ? 'Response sent to customer' : 'Response recorded',
+      message: emailSent ? 'Response sent to customer' : 'Response recorded',
+      emailSent,
+      emailError,
       respondedAt: new Date().toISOString(),
     });
   } catch (error) {
@@ -1264,6 +1260,8 @@ const alertWorkflowStatus = new Map<string, {
   message?: string;
   progress?: number;
   result?: AlertAnalysis;
+  alert?: import('./types.js').MonitoringAlert;  // Store alert for remediation
+  remediationExecution?: RemediationExecution;   // Track remediation progress
 }>();
 
 /**
@@ -1308,12 +1306,13 @@ app.post('/api/workflow/alert', async (req: Request, res: Response) => {
   console.log(`[API] Alert: ${alert.title} (${alert.category})`);
   console.log(`[API] Source: ${alert.source}, Severity: ${alert.severity}`);
 
-  // Update status: analyzing
+  // Update status: analyzing (and store alert for later remediation use)
   alertWorkflowStatus.set(workflowId, {
     workflowId,
     status: 'analyzing',
     message: 'AI is analyzing the alert...',
     progress: 25,
+    alert,  // Store for remediation phase
   });
 
   try {
@@ -1324,13 +1323,14 @@ app.post('/api/workflow/alert', async (req: Request, res: Response) => {
     });
 
     if (result.success && result.data) {
-      // Update status: completed
+      // Update status: completed (keep alert for remediation phase)
       alertWorkflowStatus.set(workflowId, {
         workflowId,
         status: 'completed',
         message: 'Analysis complete',
         progress: 100,
         result: result.data,
+        alert,  // Keep for remediation
       });
 
       console.log(`[API] Monitoring alert workflow completed: ${workflowId}`);
@@ -1381,12 +1381,19 @@ app.post('/api/workflow/alert', async (req: Request, res: Response) => {
 });
 
 /**
- * Execute or record remediation for an alert
+ * Start remediation for an alert (with dry-run)
  *
- * This endpoint records/executes the remediation action:
- * 1. Validates the remediation request
- * 2. Records the action taken
- * 3. Stores completion to Mandrel
+ * SAFETY-CRITICAL: This endpoint now uses the remediationExecutor module
+ * which provides:
+ * 1. Dry-run mode by default - shows what WOULD happen
+ * 2. Step-by-step execution with approval gates
+ * 3. Full audit logging
+ *
+ * Flow:
+ * 1. POST /remediate with action='execute' starts dry-run
+ * 2. Returns remediation plan with dry-run outputs
+ * 3. User reviews and can approve specific steps
+ * 4. POST /remediate/:stepIndex to execute individual steps
  */
 app.post('/api/workflow/alert/:id/remediate', async (req: Request, res: Response) => {
   const { id: workflowId } = req.params;
@@ -1411,43 +1418,77 @@ app.post('/api/workflow/alert/:id/remediate', async (req: Request, res: Response
     return;
   }
 
-  console.log(`[API] Recording remediation for alert: ${workflowId}`);
+  if (!status.result) {
+    res.status(400).json({ error: 'No analysis available for remediation' });
+    return;
+  }
+
+  console.log(`[API] Remediation request for alert: ${workflowId}`);
   console.log(`[API] Action: ${action}`);
 
-  // Update status: remediating
-  alertWorkflowStatus.set(workflowId, {
-    ...status,
-    status: 'remediating',
-    message: 'Recording remediation...',
-    progress: 80,
-  });
-
-  try {
-    // Note: Actual remediation execution would be implemented here in production
-    // For now, we just record the action
-    if (action === 'execute') {
-      console.log(`[API] Remediation executed (would run actual commands in production)`);
-    } else if (action === 'escalate') {
-      console.log(`[API] Alert escalated for manual review`);
-    } else {
-      console.log(`[API] Alert dismissed`);
-    }
-
-    // Update status: completed
+  // Handle dismiss/escalate (non-execute actions) immediately
+  if (action === 'dismiss' || action === 'escalate') {
     alertWorkflowStatus.set(workflowId, {
       ...status,
       status: 'completed',
-      message: 'Remediation recorded',
+      message: action === 'escalate' ? 'Alert escalated for manual review' : 'Alert dismissed',
       progress: 100,
     });
 
-    console.log(`[API] Alert remediation recorded: ${workflowId}`);
+    console.log(`[API] Alert ${action}ed: ${workflowId}`);
 
     res.json({
       success: true,
       workflowId,
       action,
-      message: action === 'execute' ? 'Remediation executed' : action === 'escalate' ? 'Alert escalated' : 'Alert dismissed',
+      message: action === 'escalate' ? 'Alert escalated' : 'Alert dismissed',
+      remediatedAt: new Date().toISOString(),
+    });
+    return;
+  }
+
+  // For 'execute' action, start dry-run first
+  try {
+    // Check if remediation already started
+    let execution = getRemediation(workflowId);
+
+    if (!execution) {
+      // Start new remediation in dry-run mode
+      console.log(`[API] Starting remediation dry-run for: ${workflowId}`);
+      execution = startRemediation(workflowId, status.result, 'dry_run', notes);
+    }
+
+    // Run dry-run if not already done
+    if (execution.status === 'pending') {
+      console.log(`[API] Running dry-run for: ${workflowId}`);
+      alertWorkflowStatus.set(workflowId, {
+        ...status,
+        status: 'remediating',
+        message: 'Running dry-run preview...',
+        progress: 50,
+      });
+
+      execution = await runDryRun(workflowId);
+    }
+
+    // Update workflow status with remediation execution
+    alertWorkflowStatus.set(workflowId, {
+      ...status,
+      status: 'reviewing_remediation',
+      message: 'Awaiting approval for remediation steps',
+      progress: 60,
+      remediationExecution: execution,
+    });
+
+    console.log(`[API] Dry-run complete for: ${workflowId}`);
+    console.log(`[API] Steps: ${execution.steps.length}`);
+
+    res.json({
+      success: true,
+      workflowId,
+      action: 'dry_run',
+      message: 'Dry-run complete. Review steps and approve for execution.',
+      execution,
       remediatedAt: new Date().toISOString(),
     });
   } catch (error) {
@@ -1459,7 +1500,7 @@ app.post('/api/workflow/alert/:id/remediate', async (req: Request, res: Response
       message: errorMessage,
     });
 
-    console.error(`[API] Unexpected error in remediation: ${errorMessage}`);
+    console.error(`[API] Remediation error: ${errorMessage}`);
 
     res.status(500).json({
       success: false,
@@ -1467,6 +1508,224 @@ app.post('/api/workflow/alert/:id/remediate', async (req: Request, res: Response
       error: errorMessage,
     });
   }
+});
+
+/**
+ * Approve remediation steps for execution
+ *
+ * SAFETY GATE: User must explicitly approve steps before they can be executed
+ */
+app.post('/api/workflow/alert/:id/remediate/approve', async (req: Request, res: Response) => {
+  const { id: workflowId } = req.params;
+  const { stepIndices, approvedBy } = req.body;
+
+  if (!Array.isArray(stepIndices)) {
+    res.status(400).json({ error: 'stepIndices must be an array of step numbers' });
+    return;
+  }
+
+  const execution = getRemediation(workflowId);
+  if (!execution) {
+    res.status(404).json({ error: 'No remediation found for this workflow' });
+    return;
+  }
+
+  try {
+    console.log(`[API] Approving steps ${stepIndices.join(', ')} for: ${workflowId}`);
+    const updated = approveSteps(workflowId, stepIndices, approvedBy || 'user');
+
+    // Update workflow status
+    const status = alertWorkflowStatus.get(workflowId);
+    if (status) {
+      alertWorkflowStatus.set(workflowId, {
+        ...status,
+        remediationExecution: updated,
+      });
+    }
+
+    res.json({
+      success: true,
+      workflowId,
+      message: `Approved ${stepIndices.length} steps for execution`,
+      execution: updated,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({
+      success: false,
+      workflowId,
+      error: errorMessage,
+    });
+  }
+});
+
+/**
+ * Execute a specific remediation step
+ *
+ * STEP-BY-STEP EXECUTION: Only executes approved steps one at a time
+ */
+app.post('/api/workflow/alert/:id/remediate/step/:stepIndex', async (req: Request, res: Response) => {
+  const { id: workflowId, stepIndex: stepIndexStr } = req.params;
+  const stepIndex = parseInt(stepIndexStr, 10);
+  const { approved, modifiedCommand } = req.body;
+
+  if (isNaN(stepIndex)) {
+    res.status(400).json({ error: 'Invalid step index' });
+    return;
+  }
+
+  const execution = getRemediation(workflowId);
+  if (!execution) {
+    res.status(404).json({ error: 'No remediation found for this workflow' });
+    return;
+  }
+
+  try {
+    console.log(`[API] Executing step ${stepIndex} for: ${workflowId}`);
+    const step = await executeStep(workflowId, stepIndex, approved !== false, modifiedCommand);
+
+    // Update workflow status
+    const status = alertWorkflowStatus.get(workflowId);
+    const updatedExecution = getRemediation(workflowId);
+
+    if (status && updatedExecution) {
+      const allDone = updatedExecution.status === 'completed';
+      alertWorkflowStatus.set(workflowId, {
+        ...status,
+        status: allDone ? 'completed' : 'remediating',
+        message: allDone ? 'Remediation complete' : `Executing step ${stepIndex + 1}/${updatedExecution.steps.length}`,
+        progress: allDone ? 100 : 70 + (30 * (stepIndex + 1) / updatedExecution.steps.length),
+        remediationExecution: updatedExecution,
+      });
+    }
+
+    res.json({
+      success: true,
+      workflowId,
+      stepIndex,
+      step,
+      execution: updatedExecution,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({
+      success: false,
+      workflowId,
+      stepIndex,
+      error: errorMessage,
+    });
+  }
+});
+
+/**
+ * Execute all approved remediation steps
+ *
+ * Convenience endpoint to run all approved steps in sequence
+ */
+app.post('/api/workflow/alert/:id/remediate/execute-all', async (req: Request, res: Response) => {
+  const { id: workflowId } = req.params;
+
+  const execution = getRemediation(workflowId);
+  if (!execution) {
+    res.status(404).json({ error: 'No remediation found for this workflow' });
+    return;
+  }
+
+  try {
+    console.log(`[API] Executing all approved steps for: ${workflowId}`);
+
+    const status = alertWorkflowStatus.get(workflowId);
+    if (status) {
+      alertWorkflowStatus.set(workflowId, {
+        ...status,
+        status: 'remediating',
+        message: 'Executing approved steps...',
+        progress: 70,
+      });
+    }
+
+    const result = await executeAllSteps(workflowId);
+
+    if (status) {
+      alertWorkflowStatus.set(workflowId, {
+        ...status,
+        status: 'completed',
+        message: 'Remediation complete',
+        progress: 100,
+        remediationExecution: result,
+      });
+    }
+
+    // Generate summary for Mandrel
+    const summary = generateRemediationSummary(result);
+    console.log(`[API] Remediation complete for: ${workflowId}`);
+
+    res.json({
+      success: true,
+      workflowId,
+      execution: result,
+      summary,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({
+      success: false,
+      workflowId,
+      error: errorMessage,
+    });
+  }
+});
+
+/**
+ * Cancel an in-progress remediation
+ */
+app.post('/api/workflow/alert/:id/remediate/cancel', (req: Request, res: Response) => {
+  const { id: workflowId } = req.params;
+
+  const execution = cancelRemediation(workflowId);
+  if (!execution) {
+    res.status(404).json({ error: 'No remediation found for this workflow' });
+    return;
+  }
+
+  const status = alertWorkflowStatus.get(workflowId);
+  if (status) {
+    alertWorkflowStatus.set(workflowId, {
+      ...status,
+      status: 'completed',
+      message: 'Remediation cancelled',
+      progress: 100,
+      remediationExecution: execution,
+    });
+  }
+
+  console.log(`[API] Remediation cancelled for: ${workflowId}`);
+
+  res.json({
+    success: true,
+    workflowId,
+    message: 'Remediation cancelled',
+    execution,
+  });
+});
+
+/**
+ * Get remediation status
+ */
+app.get('/api/workflow/alert/:id/remediate', (req: Request, res: Response) => {
+  const { id: workflowId } = req.params;
+
+  const execution = getRemediation(workflowId);
+  if (!execution) {
+    res.status(404).json({ error: 'No remediation found for this workflow' });
+    return;
+  }
+
+  res.json({
+    success: true,
+    workflowId,
+    execution,
+  });
 });
 
 /**
@@ -1652,6 +1911,29 @@ app.patch('/api/orchestrate/:sessionId/tasks/:taskId', (req: Request, res: Respo
   res.json({
     success: true,
     execution: session.execution,
+  });
+});
+
+/**
+ * Cancel an orchestration session
+ * Marks all pending tasks as cancelled. Running tasks will complete naturally.
+ */
+app.post('/api/orchestrate/:sessionId/cancel', (req: Request, res: Response) => {
+  const { sessionId } = req.params;
+
+  console.log(`[API] Cancelling orchestration session: ${sessionId}`);
+
+  const result = cancelOrchestrationSession(sessionId);
+
+  if (!result.success) {
+    res.status(404).json({ error: result.error || 'Session not found' });
+    return;
+  }
+
+  res.json({
+    success: true,
+    session: result.session,
+    message: `Session cancelled. ${result.session?.execution.cancelled || 0} tasks were pending and cancelled.`,
   });
 });
 

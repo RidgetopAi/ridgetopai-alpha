@@ -94,10 +94,11 @@ export function WorkflowView() {
           break;
         case 'status':
           const statusOrder: Record<SessionState, number> = {
-            executing: 5,
-            ready: 4,
-            analyzing: 3,
-            completed: 2,
+            executing: 6,
+            ready: 5,
+            analyzing: 4,
+            completed: 3,
+            cancelled: 2,
             failed: 1,
             idle: 0,
           };

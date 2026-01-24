@@ -7,6 +7,7 @@
  */
 
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import type {
   BugFixWorkflow,
   WorkflowState,
@@ -15,7 +16,35 @@ import type {
   FixReview,
   Implementation,
 } from '../lib/types/workflow';
+import { isTimeoutError } from '../lib/types/workflow';
 import { executeBugFix, executeImplementation, toImplementation, storeBugFixToMandrel } from '../lib/api/taskRunner';
+
+// Helper to revive Date objects from JSON storage
+const reviveDates = (workflow: BugFixWorkflow): BugFixWorkflow => ({
+  ...workflow,
+  createdAt: new Date(workflow.createdAt),
+  updatedAt: new Date(workflow.updatedAt),
+  analysis: workflow.analysis ? {
+    ...workflow.analysis,
+    generatedAt: new Date(workflow.analysis.generatedAt),
+  } : undefined,
+  review: workflow.review ? {
+    ...workflow.review,
+    reviewedAt: new Date(workflow.review.reviewedAt),
+  } : undefined,
+  implementation: workflow.implementation ? {
+    ...workflow.implementation,
+    completedAt: new Date(workflow.implementation.completedAt),
+  } : undefined,
+  confirmation: workflow.confirmation ? {
+    ...workflow.confirmation,
+    confirmedAt: new Date(workflow.confirmation.confirmedAt),
+  } : undefined,
+  error: workflow.error ? {
+    ...workflow.error,
+    occurredAt: new Date(workflow.error.occurredAt),
+  } : undefined,
+});
 
 // Always use real backend - mock mode removed for production
 const USE_REAL_BACKEND = true;
@@ -32,13 +61,14 @@ interface WorkflowStore {
   createWorkflow: (bugReport: BugReport) => string;
   submitWorkflow: (id: string, projectPath?: string, projectName?: string) => Promise<void>;
   transitionState: (id: string, newState: WorkflowState) => void;
-  failWorkflow: (id: string, error: string, step: WorkflowState) => void;
+  failWorkflow: (id: string, error: string, step: WorkflowState, timedOut?: boolean) => void;
 
   // Actions - Workflow Data
   setAnalysis: (id: string, analysis: BugAnalysis) => void;
   setReview: (id: string, review: FixReview) => void;
   setImplementation: (id: string, implementation: Implementation) => void;
   confirmWorkflow: (id: string, confirmed: boolean, feedback?: string) => Promise<void>;
+  reanalyzeWithFeedback: (id: string) => Promise<void>;
 
   // Actions - Selection
   selectWorkflow: (id: string | null) => void;
@@ -54,12 +84,14 @@ interface WorkflowStore {
 
 const generateId = () => Math.random().toString(36).substring(2, 11);
 
-export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
-  workflows: [],
-  activeWorkflow: null,
-  isLoading: false,
-  error: null,
-  useRealBackend: USE_REAL_BACKEND,
+export const useWorkflowStore = create<WorkflowStore>()(
+  persist(
+    (set, get) => ({
+      workflows: [],
+      activeWorkflow: null,
+      isLoading: false,
+      error: null,
+      useRealBackend: USE_REAL_BACKEND,
 
   createWorkflow: (bugReport) => {
     const id = generateId();
@@ -159,7 +191,10 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     }));
   },
 
-  failWorkflow: (id, errorMessage, step) => {
+  failWorkflow: (id, errorMessage, step, timedOut) => {
+    // Auto-detect timeout if not explicitly specified
+    const isTimeout = timedOut ?? isTimeoutError(errorMessage);
+
     set((state) => ({
       workflows: state.workflows.map((w) =>
         w.id === id
@@ -167,7 +202,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
               ...w,
               state: 'failed' as WorkflowState,
               updatedAt: new Date(),
-              error: { message: errorMessage, step, occurredAt: new Date() },
+              error: { message: errorMessage, step, occurredAt: new Date(), timedOut: isTimeout },
             }
           : w
       ),
@@ -176,7 +211,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
           ? {
               ...state.activeWorkflow,
               state: 'failed' as WorkflowState,
-              error: { message: errorMessage, step, occurredAt: new Date() },
+              error: { message: errorMessage, step, occurredAt: new Date(), timedOut: isTimeout },
             }
           : state.activeWorkflow,
     }));
@@ -329,6 +364,61 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     }
   },
 
+  reanalyzeWithFeedback: async (id) => {
+    const workflow = get().workflows.find((w) => w.id === id);
+    if (!workflow || !workflow.review || workflow.review.decision !== 'changes_requested') {
+      console.warn('[WorkflowStore] Cannot reanalyze - no changes_requested review');
+      return;
+    }
+
+    const feedbackNotes = workflow.review.notes || '';
+    console.log('[WorkflowStore] Re-analyzing with feedback:', feedbackNotes);
+
+    // Clear the review and analysis, transition back to analyzing
+    set((state) => ({
+      workflows: state.workflows.map((w) =>
+        w.id === id
+          ? { ...w, review: undefined, analysis: undefined, updatedAt: new Date() }
+          : w
+      ),
+      activeWorkflow:
+        state.activeWorkflow?.id === id
+          ? { ...state.activeWorkflow, review: undefined, analysis: undefined, updatedAt: new Date() }
+          : state.activeWorkflow,
+    }));
+
+    try {
+      get().transitionState(id, 'analyzing');
+
+      // Create enhanced bug report with reviewer feedback
+      const enhancedBugReport = {
+        ...workflow.bugReport,
+        description: `${workflow.bugReport.description}\n\n---\nREVIEWER FEEDBACK (from previous analysis):\n${feedbackNotes}`,
+      };
+
+      console.log('[WorkflowStore] Calling TaskRunner backend with feedback...');
+      const response = await executeBugFix(id, enhancedBugReport, workflow.projectPath);
+
+      if (response.success && response.analysis) {
+        const analysis: BugAnalysis = {
+          ...response.analysis,
+          generatedAt: response.analysis.generatedAt || new Date(),
+        };
+        get().setAnalysis(id, analysis);
+        get().transitionState(id, 'proposed');
+        console.log('[WorkflowStore] Re-analysis complete:', analysis.confidence);
+      } else {
+        const errorMsg = response.error || 'Re-analysis failed - no details provided';
+        get().failWorkflow(id, errorMsg, 'analyzing');
+        console.error('[WorkflowStore] Re-analysis failed:', errorMsg);
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      get().failWorkflow(id, `Backend error: ${errorMessage}`, 'analyzing');
+      console.error('[WorkflowStore] Backend error:', errorMessage);
+    }
+  },
+
   selectWorkflow: (id) => {
     if (!id) {
       set({ activeWorkflow: null });
@@ -356,4 +446,19 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   setUseRealBackend: (value) => {
     set({ useRealBackend: value });
   },
-}));
+    }),
+    {
+      name: 'ridgetop-bugfix-workflows',
+      // Only persist workflows array, not transient state
+      partialize: (state) => ({
+        workflows: state.workflows,
+      }),
+      // Revive Date objects when loading from storage
+      onRehydrateStorage: () => (state) => {
+        if (state?.workflows) {
+          state.workflows = state.workflows.map(reviveDates);
+        }
+      },
+    }
+  )
+);

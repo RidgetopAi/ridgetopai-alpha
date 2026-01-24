@@ -2,6 +2,7 @@
  * ProposedFixReview - Review AI-proposed bug fix
  * Instance 09 - First PRODUCE capability
  * Instance 14 - Added expandable panel for detail view
+ * Instance 11 (bugfix) - Added changes_requested state handling with re-analyze capability
  */
 
 import { useState } from 'react';
@@ -44,9 +45,10 @@ function CodeDiff({ change }: { change: CodeChange }) {
 }
 
 export function ProposedFixReview({ workflow }: ProposedFixReviewProps) {
-  const { setReview, transitionState } = useWorkflowStore();
+  const { setReview, transitionState, reanalyzeWithFeedback } = useWorkflowStore();
   const [notes, setNotes] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isReanalyzing, setIsReanalyzing] = useState(false);
 
   const analysis = workflow.analysis;
   if (!analysis?.proposedFix) {
@@ -75,7 +77,17 @@ export function ProposedFixReview({ workflow }: ProposedFixReviewProps) {
     setIsSubmitting(false);
   };
 
+  const handleReanalyze = async () => {
+    setIsReanalyzing(true);
+    try {
+      await reanalyzeWithFeedback(workflow.id);
+    } finally {
+      setIsReanalyzing(false);
+    }
+  };
+
   const isInReviewableState = workflow.state === 'proposed' || workflow.state === 'reviewing';
+  const hasChangesRequested = workflow.review?.decision === 'changes_requested';
 
   return (
     <ExpandablePanel
@@ -141,8 +153,49 @@ export function ProposedFixReview({ workflow }: ProposedFixReviewProps) {
         </div>
       )}
 
-      {/* Review Actions */}
-      {isInReviewableState && (
+      {/* Changes Requested State - Show feedback and re-analyze option */}
+      {hasChangesRequested && (
+        <div className="border-t border-gray-700 pt-4 mt-4">
+          <div className="bg-yellow-900/30 border border-yellow-700/50 rounded-lg p-4 mb-4">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400">
+                Changes Requested
+              </span>
+              <span className="text-xs text-gray-500">
+                {workflow.review?.reviewedAt
+                  ? new Date(workflow.review.reviewedAt).toLocaleString()
+                  : ''}
+              </span>
+            </div>
+            {workflow.review?.notes && (
+              <div className="mt-2">
+                <h5 className="text-xs font-medium text-yellow-400 mb-1">Feedback:</h5>
+                <p className="text-sm text-yellow-200">{workflow.review.notes}</p>
+              </div>
+            )}
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              onClick={handleReanalyze}
+              disabled={isReanalyzing}
+              className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md font-medium hover:bg-blue-500 transition-colors disabled:opacity-50"
+            >
+              {isReanalyzing ? 'Re-analyzing...' : 'Re-analyze with Feedback'}
+            </button>
+            <button
+              onClick={() => handleReview('rejected')}
+              disabled={isReanalyzing}
+              className="px-4 py-2 bg-red-600 text-white rounded-md font-medium hover:bg-red-500 transition-colors disabled:opacity-50"
+            >
+              Reject
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Review Actions - only show if not already changes_requested */}
+      {isInReviewableState && !hasChangesRequested && (
         <div className="border-t border-gray-700 pt-4 mt-4">
           <div className="mb-3">
             <label htmlFor="review-notes" className="block text-sm font-medium text-gray-400 mb-1">

@@ -4,6 +4,7 @@
  */
 
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import type {
   SupportTicketWorkflow,
   TicketWorkflowState,
@@ -11,11 +12,31 @@ import type {
   TicketAnalysis,
   TicketResponse,
 } from '../lib/types/support-workflow';
+import { isTicketTimeoutError } from '../lib/types/support-workflow';
 import {
   executeSupportTicketAnalysis,
   sendSupportTicketResponse,
   storeSupportTicketCompletion,
 } from '../lib/api/supportTicketRunner';
+
+// Helper to revive Date objects from JSON storage
+const reviveDates = (workflow: SupportTicketWorkflow): SupportTicketWorkflow => ({
+  ...workflow,
+  createdAt: new Date(workflow.createdAt),
+  updatedAt: new Date(workflow.updatedAt),
+  analysis: workflow.analysis ? {
+    ...workflow.analysis,
+    analyzedAt: new Date(workflow.analysis.analyzedAt),
+  } : undefined,
+  response: workflow.response ? {
+    ...workflow.response,
+    sentAt: new Date(workflow.response.sentAt),
+  } : undefined,
+  error: workflow.error ? {
+    ...workflow.error,
+    occurredAt: new Date(workflow.error.occurredAt),
+  } : undefined,
+});
 
 // Feature flag: set to true to use real backend, false for mock
 const USE_REAL_BACKEND = import.meta.env.VITE_USE_REAL_BACKEND === 'true';
@@ -30,9 +51,9 @@ interface SupportTicketStore {
 
   // Actions - Workflow Lifecycle
   createWorkflow: (ticket: SupportTicket) => string;
-  submitWorkflow: (id: string, projectPath?: string) => Promise<void>;
+  submitWorkflow: (id: string, projectName?: string) => Promise<void>;
   transitionState: (id: string, newState: TicketWorkflowState) => void;
-  failWorkflow: (id: string, error: string, step: TicketWorkflowState) => void;
+  failWorkflow: (id: string, error: string, step: TicketWorkflowState, timedOut?: boolean) => void;
 
   // Actions - Workflow Data
   setAnalysis: (id: string, analysis: TicketAnalysis) => void;
@@ -40,6 +61,7 @@ interface SupportTicketStore {
 
   // Actions - User Actions
   approveResponse: (id: string, customResponse?: string, sendEmail?: boolean) => Promise<void>;
+  reanalyze: (id: string, additionalContext?: string) => Promise<void>;
 
   // Actions - Selection
   selectWorkflow: (id: string | null) => void;
@@ -87,12 +109,14 @@ Support Team`,
   analyzedAt: new Date(),
 });
 
-export const useSupportTicketStore = create<SupportTicketStore>((set, get) => ({
-  workflows: [],
-  activeWorkflow: null,
-  isLoading: false,
-  error: null,
-  useRealBackend: USE_REAL_BACKEND,
+export const useSupportTicketStore = create<SupportTicketStore>()(
+  persist(
+    (set, get) => ({
+      workflows: [],
+      activeWorkflow: null,
+      isLoading: false,
+      error: null,
+      useRealBackend: USE_REAL_BACKEND,
 
   createWorkflow: (ticket) => {
     const id = generateId();
@@ -112,9 +136,22 @@ export const useSupportTicketStore = create<SupportTicketStore>((set, get) => ({
     return id;
   },
 
-  submitWorkflow: async (id, projectPath) => {
+  submitWorkflow: async (id, projectName) => {
     const workflow = get().workflows.find((w) => w.id === id);
     if (!workflow || workflow.state !== 'draft') return;
+
+    // Store projectName in workflow for later phases
+    if (projectName) {
+      set((state) => ({
+        workflows: state.workflows.map((w) =>
+          w.id === id ? { ...w, projectName } : w
+        ),
+        activeWorkflow:
+          state.activeWorkflow?.id === id
+            ? { ...state.activeWorkflow, projectName }
+            : state.activeWorkflow,
+      }));
+    }
 
     // Start the workflow - transition to submitted
     get().transitionState(id, 'submitted');
@@ -127,7 +164,7 @@ export const useSupportTicketStore = create<SupportTicketStore>((set, get) => ({
         get().transitionState(id, 'analyzing');
 
         console.log('[SupportTicketStore] Calling TaskRunner backend...');
-        const response = await executeSupportTicketAnalysis(id, workflow.ticket, projectPath);
+        const response = await executeSupportTicketAnalysis(id, workflow.ticket);
 
         if (response.success && response.analysis) {
           // Add analyzedAt timestamp if not present
@@ -176,7 +213,10 @@ export const useSupportTicketStore = create<SupportTicketStore>((set, get) => ({
     }));
   },
 
-  failWorkflow: (id, errorMessage, step) => {
+  failWorkflow: (id, errorMessage, step, timedOut) => {
+    // Auto-detect timeout if not explicitly specified
+    const isTimeout = timedOut ?? isTicketTimeoutError(errorMessage);
+
     set((state) => ({
       workflows: state.workflows.map((w) =>
         w.id === id
@@ -184,7 +224,7 @@ export const useSupportTicketStore = create<SupportTicketStore>((set, get) => ({
               ...w,
               state: 'failed' as TicketWorkflowState,
               updatedAt: new Date(),
-              error: { message: errorMessage, step, occurredAt: new Date() },
+              error: { message: errorMessage, step, occurredAt: new Date(), timedOut: isTimeout },
             }
           : w
       ),
@@ -193,7 +233,7 @@ export const useSupportTicketStore = create<SupportTicketStore>((set, get) => ({
           ? {
               ...state.activeWorkflow,
               state: 'failed' as TicketWorkflowState,
-              error: { message: errorMessage, step, occurredAt: new Date() },
+              error: { message: errorMessage, step, occurredAt: new Date(), timedOut: isTimeout },
             }
           : state.activeWorkflow,
     }));
@@ -247,7 +287,9 @@ export const useSupportTicketStore = create<SupportTicketStore>((set, get) => ({
           get().transitionState(id, 'completed');
 
           // Store to Mandrel for institutional memory
+          // Instance 10 (bugfix-run) - Pass projectName for project selector
           try {
+            const wf = get().workflows.find((w) => w.id === id);
             await storeSupportTicketCompletion(
               id,
               workflow.ticket,
@@ -256,7 +298,8 @@ export const useSupportTicketStore = create<SupportTicketStore>((set, get) => ({
                 sentTo: workflow.ticket.customerEmail,
                 body: responseText,
                 sentAt: new Date(),
-              }
+              },
+              (wf as unknown as { projectName?: string })?.projectName
             );
             console.log('[SupportTicketStore] Stored to Mandrel');
           } catch (mandrelError) {
@@ -283,6 +326,85 @@ export const useSupportTicketStore = create<SupportTicketStore>((set, get) => ({
         get().setResponse(id, ticketResponse);
         get().transitionState(id, 'completed');
       }, 1000);
+    }
+  },
+
+  reanalyze: async (id, additionalContext) => {
+    const workflow = get().workflows.find((w) => w.id === id);
+    if (!workflow) {
+      console.warn('[SupportTicketStore] Cannot reanalyze - workflow not found');
+      return;
+    }
+
+    // Only allow reanalyze from proposed or failed states
+    if (workflow.state !== 'proposed' && workflow.state !== 'failed') {
+      console.warn('[SupportTicketStore] Cannot reanalyze - invalid state:', workflow.state);
+      return;
+    }
+
+    console.log('[SupportTicketStore] Re-analyzing ticket with additional context:', additionalContext);
+
+    // Clear the analysis, transition back to analyzing
+    set((state) => ({
+      workflows: state.workflows.map((w) =>
+        w.id === id
+          ? { ...w, analysis: undefined, error: undefined, updatedAt: new Date() }
+          : w
+      ),
+      activeWorkflow:
+        state.activeWorkflow?.id === id
+          ? { ...state.activeWorkflow, analysis: undefined, error: undefined, updatedAt: new Date() }
+          : state.activeWorkflow,
+    }));
+
+    const useReal = get().useRealBackend;
+
+    if (useReal) {
+      try {
+        get().transitionState(id, 'analyzing');
+
+        // Create enhanced ticket with additional context if provided
+        const enhancedTicket = additionalContext
+          ? {
+              ...workflow.ticket,
+              description: `${workflow.ticket.description}\n\n---\nADDITIONAL CONTEXT (for re-analysis):\n${additionalContext}`,
+            }
+          : workflow.ticket;
+
+        console.log('[SupportTicketStore] Calling TaskRunner backend for re-analysis...');
+        const response = await executeSupportTicketAnalysis(id, enhancedTicket);
+
+        if (response.success && response.analysis) {
+          const analysis: TicketAnalysis = {
+            ...response.analysis,
+            analyzedAt: response.analysis.analyzedAt || new Date(),
+          };
+          get().setAnalysis(id, analysis);
+          get().transitionState(id, 'proposed');
+          console.log('[SupportTicketStore] Re-analysis complete:', analysis.confidence);
+        } else {
+          get().failWorkflow(id, response.error || 'Re-analysis failed', 'analyzing');
+          console.error('[SupportTicketStore] Re-analysis failed:', response.error);
+        }
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        get().failWorkflow(id, errorMessage, 'analyzing');
+        console.error('[SupportTicketStore] Backend error:', errorMessage);
+      }
+    } else {
+      // Mock re-analysis
+      setTimeout(() => {
+        get().transitionState(id, 'analyzing');
+
+        setTimeout(() => {
+          const w = get().workflows.find((wf) => wf.id === id);
+          if (!w) return;
+
+          const analysis = createMockAnalysis(w.ticket);
+          get().setAnalysis(id, analysis);
+          get().transitionState(id, 'proposed');
+        }, 2000);
+      }, 500);
     }
   },
 
@@ -313,4 +435,19 @@ export const useSupportTicketStore = create<SupportTicketStore>((set, get) => ({
   setUseRealBackend: (value) => {
     set({ useRealBackend: value });
   },
-}));
+    }),
+    {
+      name: 'ridgetop-support-workflows',
+      // Only persist workflows array, not transient state
+      partialize: (state) => ({
+        workflows: state.workflows,
+      }),
+      // Revive Date objects when loading from storage
+      onRehydrateStorage: () => (state) => {
+        if (state?.workflows) {
+          state.workflows = state.workflows.map(reviveDates);
+        }
+      },
+    }
+  )
+);

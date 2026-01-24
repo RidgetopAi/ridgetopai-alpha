@@ -12,15 +12,16 @@ interface OrchestrationProgressProps {
 }
 
 export function OrchestrationProgress({ execution, state }: OrchestrationProgressProps) {
-  const { total, completed, failed, pending, running } = execution;
+  const { total, completed, failed, pending, running, cancelled } = execution;
 
-  // Calculate progress percentage
-  const doneCount = completed + failed;
+  // Calculate progress percentage (cancelled tasks count as "done")
+  const doneCount = completed + failed + (cancelled || 0);
   const progressPercent = total > 0 ? Math.round((doneCount / total) * 100) : 0;
 
   // Determine progress bar color based on state
   const progressColor =
     state === 'failed' || failed > 0 ? 'bg-red-500' :
+    state === 'cancelled' || (cancelled || 0) > 0 ? 'bg-orange-500' :
     state === 'completed' ? 'bg-green-500' :
     'bg-cyan-500';
 
@@ -71,6 +72,16 @@ export function OrchestrationProgress({ execution, state }: OrchestrationProgres
               <span className="w-2 h-2 rounded-full bg-red-500" />
               <span className="text-gray-400">
                 {failed} <span className="text-gray-500">failed</span>
+              </span>
+            </div>
+          )}
+
+          {/* Cancelled */}
+          {(cancelled || 0) > 0 && (
+            <div className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-orange-500" />
+              <span className="text-gray-400">
+                {cancelled} <span className="text-gray-500">cancelled</span>
               </span>
             </div>
           )}

@@ -98,12 +98,14 @@ export async function executeRemediation(
 
 /**
  * Store alert completion to Mandrel
+ * Instance 10 (bugfix-run) - Added projectName parameter
  */
 export async function storeAlertToMandrel(
   workflowId: string,
   alert: MonitoringAlert,
   analysis: AlertAnalysis,
-  remediation?: { action: string; notes?: string; executedAt: Date }
+  remediation?: { action: string; notes?: string; executedAt: Date },
+  projectName?: string
 ): Promise<StoreMandrelResponse> {
   const response = await fetch(`${API_BASE_URL}/api/mandrel/alert/${workflowId}/complete`, {
     method: 'POST',
@@ -114,7 +116,147 @@ export async function storeAlertToMandrel(
       alert,
       analysis,
       remediation,
+      projectName,
     }),
+  });
+
+  const data = await response.json();
+  return data;
+}
+
+// =========================================
+// Remediation Execution API (Instance 6-7)
+// Step-by-step remediation with safety controls
+// =========================================
+
+/**
+ * Remediation step from backend
+ */
+export interface RemediationStep {
+  index: number;
+  description: string;
+  command?: string;
+  status: 'pending' | 'dry_run' | 'approved' | 'executing' | 'completed' | 'failed' | 'skipped';
+  dryRunOutput?: string;
+  executionOutput?: string;
+  error?: string;
+  startedAt?: Date;
+  completedAt?: Date;
+}
+
+/**
+ * Remediation execution state from backend
+ */
+export interface RemediationExecution {
+  workflowId: string;
+  type: string;
+  description: string;
+  steps: RemediationStep[];
+  mode: 'dry_run' | 'step_by_step' | 'full';
+  status: 'pending' | 'dry_running' | 'awaiting_approval' | 'executing' | 'completed' | 'failed' | 'cancelled';
+  currentStepIndex: number;
+  startedAt: Date;
+  completedAt?: Date;
+  approvedBy?: string;
+  notes?: string;
+}
+
+interface RemediationStatusResponse {
+  success: boolean;
+  workflowId: string;
+  execution?: RemediationExecution;
+  error?: string;
+}
+
+// RemediationDryRunResponse used for POST /remediate response (dry-run mode)
+// Currently handled by RemediationStatusResponse since structure is similar
+
+/**
+ * Get remediation status (dry-run results, step statuses)
+ */
+export async function getRemediationStatus(
+  workflowId: string
+): Promise<RemediationStatusResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/workflow/alert/${workflowId}/remediate`);
+  const data = await response.json();
+  return data;
+}
+
+/**
+ * Approve remediation steps for execution
+ */
+export async function approveRemediationSteps(
+  workflowId: string,
+  stepIndices: number[],
+  approvedBy: string = 'user'
+): Promise<RemediationStatusResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/workflow/alert/${workflowId}/remediate/approve`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      stepIndices,
+      approvedBy,
+    }),
+  });
+
+  const data = await response.json();
+  return data;
+}
+
+/**
+ * Execute a specific remediation step
+ */
+export async function executeRemediationStep(
+  workflowId: string,
+  stepIndex: number,
+  approved: boolean = true,
+  modifiedCommand?: string
+): Promise<{ success: boolean; step?: RemediationStep; error?: string }> {
+  const response = await fetch(`${API_BASE_URL}/api/workflow/alert/${workflowId}/remediate/step/${stepIndex}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      approved,
+      modifiedCommand,
+    }),
+  });
+
+  const data = await response.json();
+  return data;
+}
+
+/**
+ * Execute all approved remediation steps
+ */
+export async function executeAllRemediationSteps(
+  workflowId: string
+): Promise<RemediationStatusResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/workflow/alert/${workflowId}/remediate/execute-all`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+
+  const data = await response.json();
+  return data;
+}
+
+/**
+ * Cancel an in-progress remediation
+ */
+export async function cancelRemediation(
+  workflowId: string
+): Promise<RemediationStatusResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/workflow/alert/${workflowId}/remediate/cancel`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
   });
 
   const data = await response.json();

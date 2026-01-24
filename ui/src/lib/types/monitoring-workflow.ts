@@ -98,6 +98,7 @@ export interface MonitoringAlertWorkflow {
     message: string;
     step: AlertWorkflowState;
     occurredAt: Date;
+    timedOut?: boolean; // True if the error was due to a timeout
   };
 }
 
@@ -174,3 +175,19 @@ export function isAlertStateActiveOrComplete(current: AlertWorkflowState, step: 
   const stepIndex = ALERT_STATE_ORDER.indexOf(step);
   return currentIndex >= stepIndex;
 }
+
+// Helper to detect if an error is a timeout
+export function isAlertTimeoutError(error: string | undefined): boolean {
+  if (!error) return false;
+  const lowerError = error.toLowerCase();
+  return lowerError.includes('timed out') ||
+         lowerError.includes('timeout') ||
+         lowerError.includes('time out');
+}
+
+// Processing states that could indicate a stuck/orphaned workflow
+export const ALERT_PROCESSING_STATES: AlertWorkflowState[] = [
+  'submitted',
+  'analyzing',
+  'remediating',
+];

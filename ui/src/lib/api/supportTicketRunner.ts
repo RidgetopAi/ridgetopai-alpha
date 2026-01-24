@@ -119,12 +119,14 @@ export async function getSupportTicketStatus(workflowId: string): Promise<Ticket
 
 /**
  * Store support ticket completion to Mandrel
+ * Instance 10 (bugfix-run) - Added projectName parameter
  */
 export async function storeSupportTicketCompletion(
   workflowId: string,
   ticket: SupportTicket,
   analysis: TicketAnalysis,
-  ticketResponse?: { sentTo: string; body: string; sentAt: Date }
+  ticketResponse?: { sentTo: string; body: string; sentAt: Date },
+  projectName?: string
 ): Promise<boolean> {
   const response = await fetch(`${API_BASE_URL}/api/mandrel/support/${workflowId}/complete`, {
     method: 'POST',
@@ -135,6 +137,7 @@ export async function storeSupportTicketCompletion(
       ticket,
       analysis,
       response: ticketResponse,
+      projectName,
     }),
   });
 

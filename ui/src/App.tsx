@@ -8,6 +8,8 @@ import { WorkflowView } from './components/workflow';
 import { ContextView } from './components/context';
 import { HistoryView } from './components/history';
 import { GoalsPanel, RecommendationsPanel } from './components/strategic';
+import { SchedulerPanel } from './components/scheduler';
+import { EventTriggersPanel } from './components/event-triggers';
 import { CommandInputOverlay } from './components/overlays/CommandInputOverlay';
 import { useUIStore } from './stores/ui-store';
 import { useOrchestrationStore } from './stores/orchestration-store';
@@ -30,6 +32,10 @@ function App() {
         return <QueueView />;
       case 'workflow':
         return <WorkflowView />;
+      case 'scheduler':
+        return <SchedulerPanel />;
+      case 'triggers':
+        return <EventTriggersPanel />;
       case 'context':
         return <ContextView />;
       case 'history':

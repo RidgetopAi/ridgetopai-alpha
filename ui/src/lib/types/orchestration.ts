@@ -10,10 +10,10 @@ export type TaskType = 'bugfix' | 'content' | 'support' | 'analysis' | 'review';
 export type Priority = 'high' | 'medium' | 'low';
 
 // Status of an orchestrated task
-export type OrchTaskStatus = 'pending' | 'dispatched' | 'running' | 'completed' | 'failed';
+export type OrchTaskStatus = 'pending' | 'dispatched' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 // Session states
-export type SessionState = 'idle' | 'analyzing' | 'ready' | 'executing' | 'completed' | 'failed';
+export type SessionState = 'idle' | 'analyzing' | 'ready' | 'executing' | 'completed' | 'failed' | 'cancelled';
 
 // A generated task from the orchestrator
 export interface GeneratedTask {
@@ -46,6 +46,7 @@ export interface ExecutionSummary {
   failed: number;
   pending: number;
   running: number;
+  cancelled: number;
 }
 
 // The complete orchestration session
@@ -60,6 +61,7 @@ export interface OrchestrationSession {
   };
   interpretation: IntentInterpretation;
   execution: ExecutionSummary;
+  isCancelled?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -97,6 +99,13 @@ export interface ListSessionsResponse {
   sessions: OrchestrationSession[];
 }
 
+export interface CancelSessionResponse {
+  success: boolean;
+  session?: OrchestrationSession;
+  message?: string;
+  error?: string;
+}
+
 // Labels for display
 export const TASK_TYPE_LABELS: Record<TaskType, string> = {
   bugfix: 'Bug Fix',
@@ -118,6 +127,7 @@ export const TASK_STATUS_LABELS: Record<OrchTaskStatus, string> = {
   running: 'Running',
   completed: 'Completed',
   failed: 'Failed',
+  cancelled: 'Cancelled',
 };
 
 export const SESSION_STATE_LABELS: Record<SessionState, string> = {
@@ -127,6 +137,7 @@ export const SESSION_STATE_LABELS: Record<SessionState, string> = {
   executing: 'Executing',
   completed: 'Completed',
   failed: 'Failed',
+  cancelled: 'Cancelled',
 };
 
 // Capability mapping for styling

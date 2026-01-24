@@ -9,6 +9,7 @@
  */
 
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import type {
   ContentWorkflow,
   ContentWorkflowState,
@@ -19,12 +20,41 @@ import type {
   FinalContent,
   GeneratedContent,
 } from '../lib/types/content-workflow';
+import { isContentTimeoutError } from '../lib/types/content-workflow';
 import {
   executeContentGeneration,
   executeContentRefinement,
+  storeContentCompletion,
   toContentGeneration,
   toContentRefinement,
 } from '../lib/api/contentRunner';
+
+// Helper to revive Date objects from JSON storage
+const reviveDates = (workflow: ContentWorkflow): ContentWorkflow => ({
+  ...workflow,
+  createdAt: new Date(workflow.createdAt),
+  updatedAt: new Date(workflow.updatedAt),
+  generation: workflow.generation ? {
+    ...workflow.generation,
+    generatedAt: new Date(workflow.generation.generatedAt),
+  } : undefined,
+  review: workflow.review ? {
+    ...workflow.review,
+    reviewedAt: new Date(workflow.review.reviewedAt),
+  } : undefined,
+  refinements: workflow.refinements?.map(r => ({
+    ...r,
+    refinedAt: new Date(r.refinedAt),
+  })),
+  finalContent: workflow.finalContent ? {
+    ...workflow.finalContent,
+    completedAt: new Date(workflow.finalContent.completedAt),
+  } : undefined,
+  error: workflow.error ? {
+    ...workflow.error,
+    occurredAt: new Date(workflow.error.occurredAt),
+  } : undefined,
+});
 
 // Feature flag: set to true to use real backend, false for mock
 const USE_REAL_BACKEND = import.meta.env.VITE_USE_REAL_BACKEND === 'true';
@@ -39,9 +69,9 @@ interface ContentWorkflowStore {
 
   // Actions - Workflow Lifecycle
   createWorkflow: (brief: ContentBrief) => string;
-  submitWorkflow: (id: string, brandContext?: string) => Promise<void>;
+  submitWorkflow: (id: string, brandContext?: string, projectName?: string) => Promise<void>;
   transitionState: (id: string, newState: ContentWorkflowState) => void;
-  failWorkflow: (id: string, error: string, step: ContentWorkflowState) => void;
+  failWorkflow: (id: string, error: string, step: ContentWorkflowState, timedOut?: boolean) => void;
 
   // Actions - Workflow Data
   setGeneration: (id: string, generation: ContentGeneration) => void;
@@ -133,12 +163,14 @@ const createMockRefinement = (
   refinedAt: new Date(),
 });
 
-export const useContentWorkflowStore = create<ContentWorkflowStore>((set, get) => ({
-  workflows: [],
-  activeWorkflow: null,
-  isLoading: false,
-  error: null,
-  useRealBackend: USE_REAL_BACKEND,
+export const useContentWorkflowStore = create<ContentWorkflowStore>()(
+  persist(
+    (set, get) => ({
+      workflows: [],
+      activeWorkflow: null,
+      isLoading: false,
+      error: null,
+      useRealBackend: USE_REAL_BACKEND,
 
   createWorkflow: (brief) => {
     const id = generateId();
@@ -158,9 +190,22 @@ export const useContentWorkflowStore = create<ContentWorkflowStore>((set, get) =
     return id;
   },
 
-  submitWorkflow: async (id, brandContext) => {
+  submitWorkflow: async (id, brandContext, projectName) => {
     const workflow = get().workflows.find((w) => w.id === id);
     if (!workflow || workflow.state !== 'draft') return;
+
+    // Store projectName in workflow for later phases
+    if (projectName) {
+      set((state) => ({
+        workflows: state.workflows.map((w) =>
+          w.id === id ? { ...w, projectName } : w
+        ),
+        activeWorkflow:
+          state.activeWorkflow?.id === id
+            ? { ...state.activeWorkflow, projectName }
+            : state.activeWorkflow,
+      }));
+    }
 
     // Start the workflow - transition to submitted
     get().transitionState(id, 'submitted');
@@ -226,7 +271,10 @@ export const useContentWorkflowStore = create<ContentWorkflowStore>((set, get) =
     }));
   },
 
-  failWorkflow: (id, errorMessage, step) => {
+  failWorkflow: (id, errorMessage, step, timedOut) => {
+    // Auto-detect timeout if not explicitly specified
+    const isTimeout = timedOut ?? isContentTimeoutError(errorMessage);
+
     set((state) => ({
       workflows: state.workflows.map((w) =>
         w.id === id
@@ -234,7 +282,7 @@ export const useContentWorkflowStore = create<ContentWorkflowStore>((set, get) =
               ...w,
               state: 'failed' as ContentWorkflowState,
               updatedAt: new Date(),
-              error: { message: errorMessage, step, occurredAt: new Date() },
+              error: { message: errorMessage, step, occurredAt: new Date(), timedOut: isTimeout },
             }
           : w
       ),
@@ -243,7 +291,7 @@ export const useContentWorkflowStore = create<ContentWorkflowStore>((set, get) =
           ? {
               ...state.activeWorkflow,
               state: 'failed' as ContentWorkflowState,
-              error: { message: errorMessage, step, occurredAt: new Date() },
+              error: { message: errorMessage, step, occurredAt: new Date(), timedOut: isTimeout },
             }
           : state.activeWorkflow,
     }));
@@ -286,6 +334,25 @@ export const useContentWorkflowStore = create<ContentWorkflowStore>((set, get) =
         };
         get().setFinalContent(id, finalContent);
         get().transitionState(id, 'completed');
+
+        // Instance 2 - Wire to Mandrel: Store approved content for institutional memory
+        // Instance 10 (bugfix-run) - Pass projectName for project selector
+        if (get().useRealBackend) {
+          // Get fresh workflow with projectName
+          const wf = get().workflows.find((w) => w.id === id);
+          storeContentCompletion(id, workflow.brief, workflow.generation, {
+            decision: 'approved',
+            feedback: review.feedback,
+          }, (wf as unknown as { projectName?: string })?.projectName).then((result) => {
+            if (result.success) {
+              console.log('[ContentWorkflowStore] Content stored to Mandrel');
+            } else {
+              console.warn('[ContentWorkflowStore] Failed to store to Mandrel:', result.error);
+            }
+          }).catch((error) => {
+            console.error('[ContentWorkflowStore] Mandrel storage error:', error);
+          });
+        }
       }
     } else if (review.decision === 'needs_revision') {
       // Start refinement
@@ -416,4 +483,19 @@ export const useContentWorkflowStore = create<ContentWorkflowStore>((set, get) =
   setUseRealBackend: (value) => {
     set({ useRealBackend: value });
   },
-}));
+    }),
+    {
+      name: 'ridgetop-content-workflows',
+      // Only persist workflows array, not transient state
+      partialize: (state) => ({
+        workflows: state.workflows,
+      }),
+      // Revive Date objects when loading from storage
+      onRehydrateStorage: () => (state) => {
+        if (state?.workflows) {
+          state.workflows = state.workflows.map(reviveDates);
+        }
+      },
+    }
+  )
+);

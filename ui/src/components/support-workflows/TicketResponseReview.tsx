@@ -13,13 +13,16 @@ interface TicketResponseReviewProps {
 }
 
 export function TicketResponseReview({ workflow }: TicketResponseReviewProps) {
-  const { approveResponse } = useSupportTicketStore();
+  const { approveResponse, reanalyze } = useSupportTicketStore();
   const { analysis } = workflow;
 
   const [editedResponse, setEditedResponse] = useState(analysis?.suggestedResponse || '');
   const [isEditing, setIsEditing] = useState(false);
   const [sendEmail, setSendEmail] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showReanalyze, setShowReanalyze] = useState(false);
+  const [reanalyzeContext, setReanalyzeContext] = useState('');
+  const [isReanalyzing, setIsReanalyzing] = useState(false);
 
   if (!analysis) {
     return <div className="text-gray-400">No analysis available</div>;
@@ -29,6 +32,14 @@ export function TicketResponseReview({ workflow }: TicketResponseReviewProps) {
     setIsSubmitting(true);
     await approveResponse(workflow.id, isEditing ? editedResponse : undefined, sendEmail);
     setIsSubmitting(false);
+  };
+
+  const handleReanalyze = async () => {
+    setIsReanalyzing(true);
+    await reanalyze(workflow.id, reanalyzeContext || undefined);
+    setIsReanalyzing(false);
+    setShowReanalyze(false);
+    setReanalyzeContext('');
   };
 
   const confidenceColor = {
@@ -156,14 +167,49 @@ export function TicketResponseReview({ workflow }: TicketResponseReviewProps) {
         </div>
       </div>
 
+      {/* Re-analyze Panel */}
+      {showReanalyze && (
+        <div className="bg-yellow-900/20 border border-yellow-800/50 rounded-lg p-4">
+          <h4 className="text-sm font-medium text-yellow-400 mb-2">Re-analyze Ticket</h4>
+          <p className="text-xs text-gray-400 mb-3">
+            Provide additional context to improve the analysis, or leave blank to retry with original ticket.
+          </p>
+          <textarea
+            value={reanalyzeContext}
+            onChange={(e) => setReanalyzeContext(e.target.value)}
+            placeholder="Additional context for re-analysis (optional)..."
+            rows={3}
+            className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-500 resize-none mb-3"
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={handleReanalyze}
+              disabled={isReanalyzing}
+              className="flex-1 px-4 py-2 bg-yellow-600 text-white rounded-md font-medium hover:bg-yellow-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isReanalyzing ? 'Re-analyzing...' : 'Re-analyze'}
+            </button>
+            <button
+              onClick={() => {
+                setShowReanalyze(false);
+                setReanalyzeContext('');
+              }}
+              className="px-4 py-2 bg-gray-700 text-gray-300 rounded-md font-medium hover:bg-gray-600 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Actions */}
       <div className="flex gap-2">
         <button
           onClick={handleApprove}
-          disabled={isSubmitting}
+          disabled={isSubmitting || isReanalyzing}
           className={`
             flex-1 px-4 py-2 rounded-md font-medium transition-colors
-            ${isSubmitting
+            ${isSubmitting || isReanalyzing
               ? 'bg-gray-700 text-gray-400 cursor-not-allowed'
               : 'bg-cyan-600 text-white hover:bg-cyan-500'
             }
@@ -171,6 +217,15 @@ export function TicketResponseReview({ workflow }: TicketResponseReviewProps) {
         >
           {isSubmitting ? 'Sending...' : sendEmail ? 'Send Response' : 'Record Response'}
         </button>
+        {!showReanalyze && (
+          <button
+            onClick={() => setShowReanalyze(true)}
+            disabled={isSubmitting || isReanalyzing}
+            className="px-4 py-2 bg-gray-700 text-gray-300 rounded-md font-medium hover:bg-gray-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Re-analyze
+          </button>
+        )}
       </div>
     </div>
   );

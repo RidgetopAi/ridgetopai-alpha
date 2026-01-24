@@ -171,3 +171,63 @@ export function toContentRefinement(
     refinedAt: new Date(),
   };
 }
+
+export interface ContentCompletionResponse {
+  success: boolean;
+  workflowId: string;
+  message?: string;
+  error?: string;
+}
+
+/**
+ * Store content completion to Mandrel for institutional memory
+ * Instance 2 - Wire Content Workflow to Mandrel (audit fix)
+ * Instance 10 (bugfix-run) - Added projectName parameter
+ */
+export async function storeContentCompletion(
+  workflowId: string,
+  brief: ContentBrief,
+  generation: ContentGeneration,
+  review?: { decision: 'approved' | 'rejected' | 'needs_revision'; feedback?: string },
+  projectName?: string
+): Promise<ContentCompletionResponse> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/mandrel/content/${workflowId}/complete`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        brief,
+        generation: {
+          content: generation.content,
+          confidence: generation.confidence,
+          suggestions: generation.suggestions,
+          alternatives: generation.alternatives,
+        },
+        review,
+        projectName,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return {
+        success: false,
+        workflowId,
+        error: data.error || `Request failed: ${response.statusText}`,
+      };
+    }
+
+    return data;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[ContentRunner API] Failed to store completion:', errorMessage);
+    return {
+      success: false,
+      workflowId,
+      error: errorMessage,
+    };
+  }
+}

@@ -32,6 +32,7 @@ export function OrchestrationPanel() {
     error,
     createSession,
     executeSession,
+    cancelSession,
     resetActiveSession,
     clearError,
   } = useOrchestrationStore();
@@ -45,6 +46,10 @@ export function OrchestrationPanel() {
 
   const handleExecute = async () => {
     await executeSession();
+  };
+
+  const handleCancel = async () => {
+    await cancelSession();
   };
 
   const handleNewSession = () => {
@@ -70,7 +75,8 @@ export function OrchestrationPanel() {
 
     const canExecute = sessionState === 'ready' && execution.pending > 0;
     const isExecuting = sessionState === 'executing';
-    const isDone = sessionState === 'completed' || sessionState === 'failed';
+    const isCancelled = sessionState === 'cancelled';
+    const isDone = sessionState === 'completed' || sessionState === 'failed' || isCancelled;
 
     const intentPreview = (activeSession.intent?.length ?? 0) > 40
       ? activeSession.intent?.substring(0, 40) + '...'
@@ -97,6 +103,7 @@ export function OrchestrationPanel() {
                 ${sessionState === 'executing' ? 'bg-blue-500/20 text-blue-400' : ''}
                 ${sessionState === 'ready' ? 'bg-yellow-500/20 text-yellow-400' : ''}
                 ${sessionState === 'failed' ? 'bg-red-500/20 text-red-400' : ''}
+                ${sessionState === 'cancelled' ? 'bg-orange-500/20 text-orange-400' : ''}
                 ${sessionState === 'analyzing' ? 'bg-purple-500/20 text-purple-400' : ''}
               `}>
                 {SESSION_STATE_LABELS[sessionState]}
@@ -153,12 +160,21 @@ export function OrchestrationPanel() {
           )}
 
           {isExecuting && (
-            <div className="flex-1 px-4 py-3 bg-blue-600/20 text-blue-400 rounded-md font-medium text-center">
-              <span className="animate-pulse">Executing...</span>
-              <span className="ml-2 text-sm">
-                {execution.completed}/{execution.total}
-              </span>
-            </div>
+            <>
+              <div className="flex-1 px-4 py-3 bg-blue-600/20 text-blue-400 rounded-md font-medium text-center">
+                <span className="animate-pulse">Executing...</span>
+                <span className="ml-2 text-sm">
+                  {execution.completed}/{execution.total}
+                </span>
+              </div>
+              <button
+                onClick={handleCancel}
+                disabled={isLoading}
+                className="px-4 py-3 bg-orange-600 text-white rounded-md font-medium hover:bg-orange-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Cancel
+              </button>
+            </>
           )}
 
           {isDone && (
@@ -189,6 +205,18 @@ export function OrchestrationPanel() {
             <p className="text-gray-400 text-sm">
               {execution.failed} task{execution.failed !== 1 ? 's' : ''} failed
               {execution.completed > 0 && `, ${execution.completed} succeeded`}
+            </p>
+          </div>
+        )}
+
+        {/* Cancelled Summary */}
+        {sessionState === 'cancelled' && (
+          <div className="bg-orange-900/20 rounded-lg p-4 text-center">
+            <div className="text-orange-400 text-lg mb-1">Orchestration Cancelled</div>
+            <p className="text-gray-400 text-sm">
+              {execution.cancelled} task{execution.cancelled !== 1 ? 's' : ''} cancelled
+              {execution.completed > 0 && `, ${execution.completed} completed before cancellation`}
+              {execution.failed > 0 && `, ${execution.failed} failed`}
             </p>
           </div>
         )}

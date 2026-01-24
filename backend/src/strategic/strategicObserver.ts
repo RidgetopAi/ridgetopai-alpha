@@ -13,6 +13,7 @@ import type {
   WorkflowCompletion,
   TicketCompletion,
   AlertCompletion,
+  OrchestrationCompletion,
 } from '../mandrelClient.js';
 import type {
   BugReport,
@@ -456,6 +457,83 @@ export async function recordAlertCompletion(completion: AlertCompletion): Promis
   });
 }
 
+/**
+ * Record an orchestration session completion
+ */
+export async function recordOrchestrationCompletion(completion: OrchestrationCompletion): Promise<string | null> {
+  // Determine outcome based on task execution
+  let outcome: string;
+  if (completion.execution.failed === 0 && completion.execution.completed === completion.execution.total) {
+    outcome = 'success';
+  } else if (completion.execution.failed === completion.execution.total) {
+    outcome = 'failure';
+  } else if (completion.execution.failed > 0) {
+    outcome = 'partial';
+  } else {
+    outcome = 'unknown';
+  }
+
+  // Calculate confidence based on success rate
+  const successRate = completion.execution.total > 0
+    ? completion.execution.completed / completion.execution.total
+    : 0;
+  const confidenceScore = successRate;
+
+  // Build tags
+  const tags = [
+    'orchestration',
+    'command',
+  ];
+
+  if (completion.context?.focus) {
+    tags.push(`focus-${completion.context.focus}`);
+  }
+
+  if (completion.context?.urgency) {
+    tags.push(`urgency-${completion.context.urgency}`);
+  }
+
+  // Add task type tags
+  const taskTypes = [...new Set(completion.tasks.map(t => t.type))];
+  taskTypes.forEach(type => tags.push(`task-${type}`));
+
+  if (completion.execution.failed > 0) {
+    tags.push('has-failures');
+  }
+
+  if (completion.execution.completed === completion.execution.total) {
+    tags.push('all-completed');
+  }
+
+  return recordObservation({
+    observationType: 'workflow_completion',
+    sourceWorkflow: 'orchestration',
+    sourceCapability: completion.capability,
+    payload: {
+      sessionId: completion.sessionId,
+      intent: completion.intent.substring(0, 200), // Truncate for storage
+      context: completion.context,
+      interpretation: {
+        understood: completion.interpretation.understood,
+        reasoning: completion.interpretation.reasoning.substring(0, 500),
+        warningsCount: completion.interpretation.warnings?.length || 0,
+      },
+      tasks: completion.tasks.map(t => ({
+        id: t.id,
+        type: t.type,
+        title: t.title,
+        status: t.status,
+        hasError: !!t.error,
+      })),
+      execution: completion.execution,
+    },
+    outcome,
+    confidenceScore,
+    tags,
+    observedAt: completion.completedAt,
+  });
+}
+
 // ============================================
 // Unified Recording Function
 // ============================================
@@ -465,7 +543,7 @@ export async function recordAlertCompletion(completion: AlertCompletion): Promis
  * Dispatches to the appropriate workflow-specific recorder
  */
 export async function recordWorkflowCompletion(
-  completion: WorkflowCompletion | TicketCompletion | AlertCompletion
+  completion: WorkflowCompletion | TicketCompletion | AlertCompletion | OrchestrationCompletion
 ): Promise<string | null> {
   switch (completion.type) {
     case 'bugfix':
@@ -479,6 +557,9 @@ export async function recordWorkflowCompletion(
 
     case 'monitoring':
       return recordAlertCompletion(completion as AlertCompletion);
+
+    case 'orchestration':
+      return recordOrchestrationCompletion(completion as OrchestrationCompletion);
 
     default:
       console.error('[StrategicObserver] Unknown workflow type:', (completion as { type: string }).type);

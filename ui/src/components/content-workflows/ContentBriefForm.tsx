@@ -1,9 +1,10 @@
 /**
  * ContentBriefForm - Form for creating content generation briefs
  * Instance 12 - First GROW capability
+ * Instance 10 (bugfix-run) - Added Mandrel project selector
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import type {
   ContentBrief,
   ContentFormat,
@@ -17,7 +18,9 @@ import {
   TONE_LABELS,
   IMAGE_STYLE_LABELS,
 } from '../../lib/types/content-workflow';
+import type { MandrelProject } from '../../lib/types/project';
 import { useContentWorkflowStore } from '../../stores/content-workflow-store';
+import { getProjectList } from '../../lib/api/projectApi';
 
 interface ContentBriefFormProps {
   onSubmit: (workflowId: string) => void;
@@ -45,13 +48,38 @@ export function ContentBriefForm({ onSubmit }: ContentBriefFormProps) {
   const [keywordInput, setKeywordInput] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // Mandrel project selector state
+  const [mandrelProjects, setMandrelProjects] = useState<MandrelProject[]>([]);
+  const [selectedProject, setSelectedProject] = useState<string>('');
+  const [projectsLoading, setProjectsLoading] = useState(true);
+
+  // Fetch Mandrel projects on mount
+  useEffect(() => {
+    async function fetchProjects() {
+      setProjectsLoading(true);
+      const response = await getProjectList();
+      if (response.success && response.projects) {
+        setMandrelProjects(response.projects);
+        // Default to ridgetopai-alpha if available
+        const defaultProject = response.projects.find(p => p.name === 'ridgetopai-alpha');
+        if (defaultProject) {
+          setSelectedProject(defaultProject.name);
+        } else if (response.projects.length > 0) {
+          setSelectedProject(response.projects[0].name);
+        }
+      }
+      setProjectsLoading(false);
+    }
+    fetchProjects();
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.title.trim() || !formData.topic.trim()) return;
 
     setIsSubmitting(true);
     const id = createWorkflow(formData);
-    await submitWorkflow(id);
+    await submitWorkflow(id, undefined, selectedProject || undefined);
     setIsSubmitting(false);
     onSubmit(id);
   };
@@ -97,6 +125,33 @@ export function ContentBriefForm({ onSubmit }: ContentBriefFormProps) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
+      {/* Mandrel Project */}
+      <div>
+        <label className="block text-sm font-medium text-gray-300 mb-1">
+          Mandrel Project <span className="text-red-400">*</span>
+        </label>
+        <select
+          value={selectedProject}
+          onChange={(e) => setSelectedProject(e.target.value)}
+          disabled={projectsLoading || isSubmitting}
+          className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent disabled:opacity-50"
+          required
+        >
+          {projectsLoading ? (
+            <option value="">Loading projects...</option>
+          ) : mandrelProjects.length === 0 ? (
+            <option value="">No projects found</option>
+          ) : (
+            mandrelProjects.map((project) => (
+              <option key={project.id} value={project.name}>
+                {project.name} {project.contextCount !== undefined && `(${project.contextCount} contexts)`}
+              </option>
+            ))
+          )}
+        </select>
+        <p className="text-xs text-gray-500 mt-1">Content will be stored to this Mandrel project</p>
+      </div>
+
       {/* Title */}
       <div>
         <label className="block text-sm font-medium text-gray-300 mb-1">
@@ -353,10 +408,10 @@ export function ContentBriefForm({ onSubmit }: ContentBriefFormProps) {
       {/* Submit Button */}
       <button
         type="submit"
-        disabled={isSubmitting || !formData.title.trim() || !formData.topic.trim()}
+        disabled={isSubmitting || !formData.title.trim() || !formData.topic.trim() || !selectedProject}
         className={`
           w-full px-4 py-2 rounded-md font-medium transition-colors
-          ${isSubmitting || !formData.title.trim() || !formData.topic.trim()
+          ${isSubmitting || !formData.title.trim() || !formData.topic.trim() || !selectedProject
             ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
             : 'bg-green-600 text-white hover:bg-green-500'
           }

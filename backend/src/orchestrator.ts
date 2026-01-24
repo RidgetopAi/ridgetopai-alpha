@@ -25,6 +25,11 @@ import {
   getSession as getSessionFromStore,
   getAllSessions as getAllSessionsFromStore,
 } from './sessionStore.js';
+import {
+  getContextForOrchestration,
+  storeOrchestrationCompletion,
+  type OrchestrationCompletion,
+} from './mandrelClient.js';
 
 // ==========================================
 // Types for Orchestration
@@ -43,7 +48,7 @@ export type Priority = 'high' | 'medium' | 'low';
 /**
  * Status of an orchestrated task
  */
-export type OrchTaskStatus = 'pending' | 'dispatched' | 'running' | 'completed' | 'failed';
+export type OrchTaskStatus = 'pending' | 'dispatched' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 /**
  * Schema for orchestration request
@@ -102,7 +107,9 @@ export interface OrchestrationSession {
     failed: number;
     pending: number;
     running: number;
+    cancelled: number;
   };
+  isCancelled?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -136,9 +143,20 @@ export async function analyzeIntent(
   intent: string,
   context?: OrchestrationRequest['context']
 ): Promise<IntentInterpretation> {
-  const prompt = buildIntentAnalysisPrompt(intent, context);
-
   console.log(`[Orchestrator] Analyzing intent: "${intent.substring(0, 50)}..."`);
+
+  // Fetch relevant context from Mandrel for institutional memory
+  let mandrelContext = '';
+  try {
+    mandrelContext = await getContextForOrchestration(intent, context?.focus);
+    if (mandrelContext) {
+      console.log('[Orchestrator] Retrieved relevant context from Mandrel');
+    }
+  } catch (error) {
+    console.warn('[Orchestrator] Failed to fetch Mandrel context, proceeding without:', error);
+  }
+
+  const prompt = buildIntentAnalysisPrompt(intent, context, mandrelContext);
 
   try {
     const result = await runClaudeAnalysis(prompt);
@@ -154,7 +172,8 @@ export async function analyzeIntent(
  */
 function buildIntentAnalysisPrompt(
   intent: string,
-  context?: OrchestrationRequest['context']
+  context?: OrchestrationRequest['context'],
+  mandrelContext?: string
 ): string {
   const focusInstruction = context?.focus
     ? `Focus area: ${context.focus}. Prioritize tasks related to this area.`
@@ -166,6 +185,14 @@ function buildIntentAnalysisPrompt(
 
   const constraintInstruction = context?.constraints
     ? `Constraints: ${context.constraints}`
+    : '';
+
+  // Include institutional memory if available
+  const memorySection = mandrelContext
+    ? `
+INSTITUTIONAL MEMORY:
+${mandrelContext}
+`
     : '';
 
   return `You are an AI orchestrator for a solo software builder. Your job is to analyze high-level directives and break them down into specific, actionable workflow tasks.
@@ -193,7 +220,7 @@ CONTEXT:
 ${focusInstruction}
 ${urgencyInstruction}
 ${constraintInstruction}
-
+${memorySection}
 THE DIRECTIVE FROM THE BUILDER:
 "${intent}"
 
@@ -364,7 +391,9 @@ export async function createOrchestrationSession(
       failed: 0,
       pending: interpretation.tasks.length,
       running: 0,
+      cancelled: 0,
     },
+    isCancelled: false,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
@@ -401,7 +430,7 @@ export function updateTaskStatus(
   if (status === 'running' && !task.startedAt) {
     task.startedAt = new Date();
   }
-  if (status === 'completed' || status === 'failed') {
+  if (status === 'completed' || status === 'failed' || status === 'cancelled') {
     task.completedAt = new Date();
   }
 
@@ -409,10 +438,12 @@ export function updateTaskStatus(
   if (oldStatus !== status) {
     if (oldStatus === 'pending') session.execution.pending--;
     if (oldStatus === 'running') session.execution.running--;
+    if (oldStatus === 'cancelled') session.execution.cancelled--;
 
     if (status === 'running') session.execution.running++;
     if (status === 'completed') session.execution.completed++;
     if (status === 'failed') session.execution.failed++;
+    if (status === 'cancelled') session.execution.cancelled++;
   }
 
   session.updatedAt = new Date();
@@ -423,6 +454,55 @@ export function updateTaskStatus(
   });
 
   return session;
+}
+
+/**
+ * Cancel an orchestration session
+ * Marks all pending tasks as cancelled and flags the session as cancelled.
+ * Running tasks will complete but no new tasks will be dispatched.
+ */
+export function cancelOrchestrationSession(
+  sessionId: string
+): { success: boolean; session?: OrchestrationSession; error?: string } {
+  const session = getSessionFromStore(sessionId);
+  if (!session) {
+    return { success: false, error: 'Session not found' };
+  }
+
+  // Mark session as cancelled
+  session.isCancelled = true;
+
+  // Cancel all pending tasks
+  let cancelledCount = 0;
+  for (const task of session.interpretation.tasks) {
+    if (task.status === 'pending') {
+      task.status = 'cancelled';
+      task.error = 'Cancelled by user';
+      task.completedAt = new Date();
+      session.execution.pending--;
+      session.execution.cancelled++;
+      cancelledCount++;
+    }
+  }
+
+  session.updatedAt = new Date();
+
+  // Persist the updated session
+  saveSession(session).catch(err => {
+    console.error('[Orchestrator] Failed to persist cancelled session:', err);
+  });
+
+  console.log(`[Orchestrator] Session ${sessionId} cancelled. ${cancelledCount} tasks cancelled.`);
+
+  return { success: true, session };
+}
+
+/**
+ * Check if a session is cancelled (used by dispatch to abort early)
+ */
+export function isSessionCancelled(sessionId: string): boolean {
+  const session = getSessionFromStore(sessionId);
+  return session?.isCancelled ?? false;
 }
 
 // ==========================================
@@ -449,9 +529,22 @@ export async function dispatchTask(
   taskId: string,
   baseUrl: string
 ): Promise<string | null> {
+  // Check if session was cancelled before starting
+  if (isSessionCancelled(session.sessionId)) {
+    console.log(`[Orchestrator] Skipping task ${taskId} - session cancelled`);
+    updateTaskStatus(session.sessionId, taskId, 'cancelled', undefined, 'Session cancelled');
+    return null;
+  }
+
   const task = session.interpretation.tasks.find(t => t.id === taskId);
   if (!task) {
     console.error(`[Orchestrator] Task not found: ${taskId}`);
+    return null;
+  }
+
+  // Double-check task wasn't already cancelled
+  if (task.status === 'cancelled') {
+    console.log(`[Orchestrator] Task ${taskId} already cancelled, skipping`);
     return null;
   }
 
@@ -480,13 +573,11 @@ export async function dispatchTask(
         dispatchResult = await dispatchMonitoring(workflowId, task, baseUrl);
         break;
       case 'analysis':
+        dispatchResult = await dispatchAnalysis(workflowId, task);
+        break;
       case 'review':
-        // These don't have dedicated workflows yet - mark as completed with note
-        console.log(`[Orchestrator] Task type ${task.type} not yet implemented`);
-        updateTaskStatus(session.sessionId, taskId, 'completed', {
-          note: `Task type ${task.type} logged for future implementation`,
-        });
-        return workflowId;
+        dispatchResult = await dispatchReview(workflowId, task);
+        break;
       default:
         console.log(`[Orchestrator] Unknown task type: ${task.type}`);
         updateTaskStatus(session.sessionId, taskId, 'failed', undefined, `Unknown task type: ${task.type}`);
@@ -717,6 +808,114 @@ async function dispatchMonitoring(
 }
 
 /**
+ * Dispatch analysis task - runs Claude CLI directly for internal analysis
+ */
+async function dispatchAnalysis(
+  workflowId: string,
+  task: GeneratedTask
+): Promise<DispatchResult> {
+  const params = task.parameters as {
+    subject?: string;
+    question?: string;
+    depth?: 'deep' | 'surface';
+  };
+
+  const subject = params.subject || task.title;
+  const question = params.question || task.description;
+  const depth = params.depth || 'surface';
+
+  const prompt = `You are performing an analysis task. Please provide a ${depth === 'deep' ? 'thorough and comprehensive' : 'concise and focused'} analysis.
+
+SUBJECT: ${subject}
+
+QUESTION/TASK: ${question}
+
+Please provide your analysis in a structured format with:
+1. Key Findings
+2. Supporting Evidence/Reasoning
+3. Conclusions
+4. ${depth === 'deep' ? 'Detailed Recommendations' : 'Summary Recommendations'}
+
+Be direct and actionable.`;
+
+  console.log(`[Orchestrator] Running analysis task: ${workflowId}`);
+
+  try {
+    const result = await runClaudeAnalysis(prompt);
+    return {
+      success: true,
+      result: {
+        workflowId,
+        type: 'analysis',
+        subject,
+        question,
+        depth,
+        analysis: result,
+        completedAt: new Date().toISOString(),
+      },
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Analysis failed: ${String(error)}`,
+    };
+  }
+}
+
+/**
+ * Dispatch review task - runs Claude CLI directly for code/content review
+ */
+async function dispatchReview(
+  workflowId: string,
+  task: GeneratedTask
+): Promise<DispatchResult> {
+  const params = task.parameters as {
+    target?: string;
+    criteria?: string;
+  };
+
+  const target = params.target || task.title;
+  const criteria = params.criteria || task.description;
+
+  const prompt = `You are performing a review task. Please review the following target against the specified criteria.
+
+TARGET FOR REVIEW: ${target}
+
+REVIEW CRITERIA: ${criteria}
+
+Please structure your review as:
+1. **Summary**: Brief overview of what was reviewed
+2. **Strengths**: What works well
+3. **Issues Found**: Problems or concerns (if any)
+4. **Recommendations**: Specific actionable improvements
+5. **Verdict**: Overall assessment (Approved/Needs Changes/Rejected)
+
+Be constructive and specific in your feedback.`;
+
+  console.log(`[Orchestrator] Running review task: ${workflowId}`);
+
+  try {
+    const result = await runClaudeAnalysis(prompt);
+    return {
+      success: true,
+      result: {
+        workflowId,
+        type: 'review',
+        target,
+        criteria,
+        review: result,
+        completedAt: new Date().toISOString(),
+      },
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Review failed: ${String(error)}`,
+    };
+  }
+}
+
+/**
  * Dispatch all pending tasks in a session
  */
 export async function dispatchAllTasks(
@@ -752,6 +951,38 @@ export async function dispatchAllTasks(
   await Promise.all(dispatchPromises);
 
   console.log(`[Orchestrator] Dispatched ${dispatched} tasks, ${failed} failed`);
+
+  // Store orchestration completion to Mandrel for institutional memory
+  // Fire-and-forget: don't block the response
+  const updatedSession = getSessionFromStore(sessionId);
+  if (updatedSession) {
+    const completion: OrchestrationCompletion = {
+      type: 'orchestration',
+      capability: 'COMMAND',
+      sessionId: updatedSession.sessionId,
+      intent: updatedSession.intent,
+      context: updatedSession.context,
+      interpretation: {
+        understood: updatedSession.interpretation.understood,
+        reasoning: updatedSession.interpretation.reasoning,
+        warnings: updatedSession.interpretation.warnings,
+      },
+      tasks: updatedSession.interpretation.tasks.map(t => ({
+        id: t.id,
+        type: t.type,
+        title: t.title,
+        status: t.status,
+        result: t.result,
+        error: t.error,
+      })),
+      execution: updatedSession.execution,
+      completedAt: new Date(),
+    };
+
+    storeOrchestrationCompletion(completion).catch(err => {
+      console.error('[Orchestrator] Failed to store completion to Mandrel:', err);
+    });
+  }
 
   return { dispatched, failed };
 }

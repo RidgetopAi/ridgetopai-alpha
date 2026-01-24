@@ -9,6 +9,7 @@ import type {
   GetSessionResponse,
   ExecuteResponse,
   ListSessionsResponse,
+  CancelSessionResponse,
 } from '../types/orchestration';
 
 // Backend URL - configurable via env
@@ -125,6 +126,37 @@ export async function listOrchestrationSessions(): Promise<ListSessionsResponse>
       success: false,
       count: 0,
       sessions: [],
+    };
+  }
+}
+
+/**
+ * Cancel an orchestration session
+ * Marks pending tasks as cancelled, running tasks will complete naturally
+ */
+export async function cancelOrchestrationSession(
+  sessionId: string
+): Promise<CancelSessionResponse> {
+  try {
+    const response = await fetch(`${API_BASE}/api/orchestrate/${sessionId}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return {
+        success: false,
+        error: data.error || `HTTP ${response.status}`,
+      };
+    }
+
+    return data as CancelSessionResponse;
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Network error',
     };
   }
 }

@@ -29,7 +29,7 @@ export function TaskList({ tasks }: TaskListProps) {
   // Sort by priority (high first) then by status
   const sortedTasks = [...tasks].sort((a, b) => {
     const priorityOrder = { high: 0, medium: 1, low: 2 };
-    const statusOrder = { running: 0, pending: 1, dispatched: 2, completed: 3, failed: 4 };
+    const statusOrder = { running: 0, pending: 1, dispatched: 2, completed: 3, failed: 4, cancelled: 5 };
 
     const priorityDiff = priorityOrder[a.priority] - priorityOrder[b.priority];
     if (priorityDiff !== 0) return priorityDiff;

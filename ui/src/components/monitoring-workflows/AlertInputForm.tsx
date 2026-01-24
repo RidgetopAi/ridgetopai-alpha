@@ -1,12 +1,15 @@
 /**
  * AlertInputForm - Form for entering monitoring alerts
  * Instance 21 - OPERATE capability
+ * Instance 10 (bugfix-run) - Added Mandrel project selector
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import type { MonitoringAlert, AlertCategory, AlertSeverity, AlertSource } from '../../lib/types/monitoring-workflow';
 import { CATEGORY_LABELS, SEVERITY_LABELS, SOURCE_LABELS } from '../../lib/types/monitoring-workflow';
+import type { MandrelProject } from '../../lib/types/project';
 import { useMonitoringStore } from '../../stores/monitoring-store';
+import { getProjectList } from '../../lib/api/projectApi';
 
 interface AlertInputFormProps {
   onSubmit: (workflowId: string) => void;
@@ -28,6 +31,31 @@ export function AlertInputForm({ onSubmit }: AlertInputFormProps) {
 
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // Mandrel project selector state
+  const [mandrelProjects, setMandrelProjects] = useState<MandrelProject[]>([]);
+  const [selectedProject, setSelectedProject] = useState<string>('');
+  const [projectsLoading, setProjectsLoading] = useState(true);
+
+  // Fetch Mandrel projects on mount
+  useEffect(() => {
+    async function fetchProjects() {
+      setProjectsLoading(true);
+      const response = await getProjectList();
+      if (response.success && response.projects) {
+        setMandrelProjects(response.projects);
+        // Default to ridgetopai-alpha if available
+        const defaultProject = response.projects.find(p => p.name === 'ridgetopai-alpha');
+        if (defaultProject) {
+          setSelectedProject(defaultProject.name);
+        } else if (response.projects.length > 0) {
+          setSelectedProject(response.projects[0].name);
+        }
+      }
+      setProjectsLoading(false);
+    }
+    fetchProjects();
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!alert.title || !alert.description) return;
@@ -37,8 +65,8 @@ export function AlertInputForm({ onSubmit }: AlertInputFormProps) {
     // Create the workflow
     const workflowId = createWorkflow(alert);
 
-    // Submit for analysis
-    submitWorkflow(workflowId);
+    // Submit for analysis with Mandrel project
+    submitWorkflow(workflowId, selectedProject || undefined);
 
     onSubmit(workflowId);
   };
@@ -49,6 +77,33 @@ export function AlertInputForm({ onSubmit }: AlertInputFormProps) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
+      {/* Mandrel Project */}
+      <div>
+        <label className="block text-sm font-medium text-gray-300 mb-1">
+          Mandrel Project <span className="text-red-400">*</span>
+        </label>
+        <select
+          value={selectedProject}
+          onChange={(e) => setSelectedProject(e.target.value)}
+          disabled={projectsLoading}
+          className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent disabled:opacity-50"
+          required
+        >
+          {projectsLoading ? (
+            <option value="">Loading projects...</option>
+          ) : mandrelProjects.length === 0 ? (
+            <option value="">No projects found</option>
+          ) : (
+            mandrelProjects.map((project) => (
+              <option key={project.id} value={project.name}>
+                {project.name} {project.contextCount !== undefined && `(${project.contextCount} contexts)`}
+              </option>
+            ))
+          )}
+        </select>
+        <p className="text-xs text-gray-500 mt-1">Alert data will be stored to this Mandrel project</p>
+      </div>
+
       {/* Title */}
       <div>
         <label className="block text-sm font-medium text-gray-300 mb-1">
@@ -188,7 +243,7 @@ export function AlertInputForm({ onSubmit }: AlertInputFormProps) {
       {/* Submit */}
       <button
         type="submit"
-        disabled={isSubmitting || !alert.title || !alert.description}
+        disabled={isSubmitting || !alert.title || !alert.description || !selectedProject}
         className="w-full px-4 py-2 bg-orange-600 text-white rounded-md font-medium hover:bg-orange-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {isSubmitting ? 'Analyzing...' : 'Analyze Alert'}

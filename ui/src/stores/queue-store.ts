@@ -149,10 +149,11 @@ export const useQueueStore = create<QueueStore>((set, get) => ({
 
     const priorityOrder: Record<Priority, number> = { high: 3, medium: 2, low: 1 };
     const statusOrder: Record<OrchTaskStatus, number> = {
-      running: 5,
-      dispatched: 4,
-      pending: 3,
-      completed: 2,
+      running: 6,
+      dispatched: 5,
+      pending: 4,
+      completed: 3,
+      cancelled: 2,
       failed: 1,
     };
 

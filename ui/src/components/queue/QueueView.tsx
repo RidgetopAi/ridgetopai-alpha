@@ -384,6 +384,7 @@ function QueueTaskCard({ task, isSelected, onClick }: QueueTaskCardProps) {
       running: 'bg-yellow-500/20 text-yellow-400',
       completed: 'bg-green-500/20 text-green-400',
       failed: 'bg-red-500/20 text-red-400',
+      cancelled: 'bg-orange-500/20 text-orange-400',
     };
     return colors[status];
   };
@@ -495,6 +496,7 @@ function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
       running: 'text-yellow-400',
       completed: 'text-green-400',
       failed: 'text-red-400',
+      cancelled: 'text-orange-400',
     };
     return colors[status];
   };
