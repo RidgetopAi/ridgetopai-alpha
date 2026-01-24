@@ -42,20 +42,33 @@ export function ContentPanel() {
 
   // Download content as file
   const handleDownload = (workflow: ContentWorkflow, format: 'markdown' | 'html' | 'plain') => {
-    const content = workflow.finalContent?.content || workflow.generation?.content;
+    // Get the GeneratedContent object - handle potential nested structures
+    let content = workflow.finalContent?.content || workflow.generation?.content;
     if (!content) return;
+
+    // Safety check: if content has a nested 'content' property, unwrap it
+    // This handles cases where the API response structure might be double-wrapped
+    if ('content' in content && typeof (content as { content?: unknown }).content === 'object') {
+      content = (content as { content: typeof content }).content;
+    }
+
+    // Ensure we have title and body
+    const title = content.title || 'Untitled';
+    const body = content.body || '';
 
     let fileContent: string;
     let filename: string;
     let mimeType: string;
 
-    const sanitizedTitle = content.title.replace(/[^a-z0-9]/gi, '-').toLowerCase();
+    const sanitizedTitle = title.replace(/[^a-z0-9]/gi, '-').toLowerCase();
+
+    const callToAction = content.callToAction || '';
 
     switch (format) {
       case 'markdown':
-        fileContent = `# ${content.title}\n\n${content.body}`;
-        if (content.callToAction) {
-          fileContent += `\n\n---\n\n**${content.callToAction}**`;
+        fileContent = `# ${title}\n\n${body}`;
+        if (callToAction) {
+          fileContent += `\n\n---\n\n**${callToAction}**`;
         }
         filename = `${sanitizedTitle}.md`;
         mimeType = 'text/markdown';
@@ -63,7 +76,7 @@ export function ContentPanel() {
 
       case 'html':
         // Convert markdown-style content to basic HTML
-        const htmlBody = content.body
+        const htmlBody = body
           .replace(/^## (.+)$/gm, '<h2>$1</h2>')
           .replace(/^### (.+)$/gm, '<h3>$1</h3>')
           .replace(/^\*\*(.+)\*\*$/gm, '<p><strong>$1</strong></p>')
@@ -79,7 +92,7 @@ export function ContentPanel() {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${content.title}</title>
+  <title>${title}</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; line-height: 1.6; }
     h1 { color: #1a1a1a; }
@@ -90,9 +103,9 @@ export function ContentPanel() {
   </style>
 </head>
 <body>
-  <h1>${content.title}</h1>
+  <h1>${title}</h1>
   ${htmlBody}
-  ${content.callToAction ? `<div class="cta"><strong>${content.callToAction}</strong></div>` : ''}
+  ${callToAction ? `<div class="cta"><strong>${callToAction}</strong></div>` : ''}
 </body>
 </html>`;
         filename = `${sanitizedTitle}.html`;
@@ -101,14 +114,14 @@ export function ContentPanel() {
 
       case 'plain':
         // Strip markdown formatting for plain text
-        fileContent = `${content.title.toUpperCase()}\n${'='.repeat(content.title.length)}\n\n`;
-        fileContent += content.body
+        fileContent = `${title.toUpperCase()}\n${'='.repeat(title.length)}\n\n`;
+        fileContent += body
           .replace(/^#{1,6}\s+/gm, '')
           .replace(/\*\*(.+?)\*\*/g, '$1')
           .replace(/\*(.+?)\*/g, '$1')
           .replace(/^- /gm, '• ');
-        if (content.callToAction) {
-          fileContent += `\n\n---\n\n${content.callToAction}`;
+        if (callToAction) {
+          fileContent += `\n\n---\n\n${callToAction}`;
         }
         filename = `${sanitizedTitle}.txt`;
         mimeType = 'text/plain';
