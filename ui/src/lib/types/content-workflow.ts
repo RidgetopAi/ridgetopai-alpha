@@ -43,6 +43,17 @@ export type ContentTone =
   | 'technical'         // Detailed, precise
   | 'educational';      // Teaching, explanatory
 
+// Image style options for AI image generation
+export type ImageStyle =
+  | 'photorealistic'    // High quality photograph style
+  | 'illustration'      // Digital illustration
+  | 'digital_art'       // Modern digital art
+  | 'watercolor'        // Watercolor painting style
+  | 'sketch'            // Pencil sketch style
+  | 'minimalist'        // Clean, minimal design
+  | 'corporate'         // Professional business style
+  | 'tech';             // Technology/futuristic aesthetic
+
 // Confidence level for AI generation
 export type ContentConfidence = 'high' | 'medium' | 'low';
 
@@ -60,6 +71,30 @@ export interface ContentBrief {
   keywords?: string[];         // SEO/discovery keywords
   wordCount?: number;          // Target word count
   additionalContext?: string;  // Any extra context
+  // Image generation options
+  generateImages?: boolean;    // Enable AI image generation
+  imageStyle?: ImageStyle;     // Style for generated images
+  maxImages?: number;          // Max images to generate (1-5)
+}
+
+// Generated image from Gemini
+export interface GeneratedImage {
+  id: string;
+  prompt: string;
+  placement: string;
+  purpose: string;
+  publicUrl: string;
+  mimeType: string;
+  generatedAt: string;
+  style: ImageStyle;
+}
+
+// Image generation error
+export interface ImageGenerationError {
+  prompt: string;
+  placement: string;
+  error: string;
+  timestamp: string;
 }
 
 // Research gathered for content creation
@@ -94,6 +129,9 @@ export interface ContentGeneration {
     approach: string;
   }[];
   generatedAt: Date;
+  // Image generation results
+  images?: GeneratedImage[];
+  imageErrors?: ImageGenerationError[];
 }
 
 // Human review of generated content
@@ -191,6 +229,18 @@ export const TONE_LABELS: Record<ContentTone, string> = {
   conversational: 'Conversational',
   technical: 'Technical',
   educational: 'Educational',
+};
+
+// Image style labels for display
+export const IMAGE_STYLE_LABELS: Record<ImageStyle, string> = {
+  photorealistic: 'Photorealistic',
+  illustration: 'Illustration',
+  digital_art: 'Digital Art',
+  watercolor: 'Watercolor',
+  sketch: 'Sketch',
+  minimalist: 'Minimalist',
+  corporate: 'Corporate',
+  tech: 'Tech/Futuristic',
 };
 
 // State progression order (for progress bar)

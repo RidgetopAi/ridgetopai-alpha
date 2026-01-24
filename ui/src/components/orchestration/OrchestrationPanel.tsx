@@ -57,13 +57,24 @@ export function OrchestrationPanel() {
     if (!activeSession) return null;
 
     const { interpretation, execution } = activeSession;
+
+    // Defensive checks for missing data
+    if (!interpretation || !execution || !interpretation.tasks) {
+      console.error('[OrchestrationPanel] Missing interpretation, execution, or tasks in session:', activeSession);
+      return (
+        <div className="text-red-400 p-4">
+          Error: Session data incomplete. Please try again.
+        </div>
+      );
+    }
+
     const canExecute = sessionState === 'ready' && execution.pending > 0;
     const isExecuting = sessionState === 'executing';
     const isDone = sessionState === 'completed' || sessionState === 'failed';
 
-    const intentPreview = activeSession.intent.length > 40
-      ? activeSession.intent.substring(0, 40) + '...'
-      : activeSession.intent;
+    const intentPreview = (activeSession.intent?.length ?? 0) > 40
+      ? activeSession.intent?.substring(0, 40) + '...'
+      : activeSession.intent ?? 'No intent';
 
     return (
       <ExpandablePanel
@@ -75,9 +86,9 @@ export function OrchestrationPanel() {
         <div className="flex items-start justify-between">
           <div className="flex-1 min-w-0">
             <h3 className="text-lg font-medium text-white truncate">
-              {activeSession.intent.length > 60
-                ? activeSession.intent.substring(0, 60) + '...'
-                : activeSession.intent}
+              {(activeSession.intent?.length ?? 0) > 60
+                ? activeSession.intent?.substring(0, 60) + '...'
+                : activeSession.intent ?? 'No intent'}
             </h3>
             <div className="flex items-center gap-2 mt-1">
               <span className={`
@@ -91,7 +102,7 @@ export function OrchestrationPanel() {
                 {SESSION_STATE_LABELS[sessionState]}
               </span>
               <span className="text-xs text-gray-500">
-                {interpretation.tasks.length} task{interpretation.tasks.length !== 1 ? 's' : ''}
+                {interpretation?.tasks?.length ?? 0} task{(interpretation?.tasks?.length ?? 0) !== 1 ? 's' : ''}
               </span>
             </div>
           </div>
@@ -108,8 +119,8 @@ export function OrchestrationPanel() {
           <h4 className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">
             AI Understanding
           </h4>
-          <p className="text-sm text-gray-300">{interpretation.understood}</p>
-          {interpretation.warnings && interpretation.warnings.length > 0 && (
+          <p className="text-sm text-gray-300">{interpretation?.understood ?? 'Processing...'}</p>
+          {interpretation?.warnings && interpretation.warnings.length > 0 && (
             <div className="mt-2 text-xs text-yellow-400">
               {interpretation.warnings.map((w, i) => (
                 <div key={i} className="flex items-start gap-1">
@@ -127,7 +138,7 @@ export function OrchestrationPanel() {
         )}
 
         {/* Task List */}
-        <TaskList tasks={interpretation.tasks} />
+        <TaskList tasks={interpretation?.tasks ?? []} />
 
         {/* Action Buttons */}
         <div className="flex gap-2">

@@ -135,13 +135,13 @@ export function RecommendationCard({
         </span>
 
         {/* Pattern Count */}
-        {recommendation.source_pattern_ids.length > 0 && (
-          <span>Patterns: {recommendation.source_pattern_ids.length}</span>
+        {(recommendation.source_pattern_ids?.length ?? 0) > 0 && (
+          <span>Patterns: {recommendation.source_pattern_ids?.length ?? 0}</span>
         )}
 
         {/* Goal Count */}
-        {recommendation.related_goal_ids.length > 0 && (
-          <span>Goals: {recommendation.related_goal_ids.length}</span>
+        {(recommendation.related_goal_ids?.length ?? 0) > 0 && (
+          <span>Goals: {recommendation.related_goal_ids?.length ?? 0}</span>
         )}
       </div>
 

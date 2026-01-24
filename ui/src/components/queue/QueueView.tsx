@@ -54,7 +54,7 @@ export function QueueView() {
   // Aggregate all tasks from all sessions
   const allTasks: QueueTask[] = useMemo(() => {
     return sessions.flatMap((session) =>
-      session.interpretation.tasks.map((task) => ({
+      (session.interpretation?.tasks || []).map((task) => ({
         ...task,
         sessionId: session.sessionId,
         sessionIntent: session.intent,

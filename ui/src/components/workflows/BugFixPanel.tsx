@@ -201,11 +201,11 @@ export function BugFixPanel() {
               )}
 
               {/* Warnings */}
-              {workflow.implementation.warnings.length > 0 && (
+              {(workflow.implementation.warnings?.length ?? 0) > 0 && (
                 <div className="bg-yellow-900/20 rounded-lg p-4">
                   <h4 className="text-sm font-medium text-yellow-400 mb-2">Warnings</h4>
                   <ul className="text-sm text-yellow-300 space-y-1">
-                    {workflow.implementation.warnings.map((warning, i) => (
+                    {(workflow.implementation.warnings || []).map((warning, i) => (
                       <li key={i}>{warning}</li>
                     ))}
                   </ul>

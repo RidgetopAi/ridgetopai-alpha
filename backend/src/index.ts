@@ -75,6 +75,8 @@ import {
 import { analyzePatterns } from './strategic/patternAnalyzer.js';
 import * as patternRepository from './strategic/db/patternRepository.js';
 import { z } from 'zod';
+// Image generation service
+import { isImageGenerationAvailable } from './imageService.js';
 
 // Zod schemas for pattern API endpoints
 const PatternQuerySchema = z.object({
@@ -108,9 +110,18 @@ const PatternUpdateSchema = z.object({
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Image storage configuration
+const IMAGE_STORAGE_PATH = process.env.IMAGE_STORAGE_PATH || '/var/lib/ridgetopai/images';
+
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+// Static file serving for generated images
+app.use('/images', express.static(IMAGE_STORAGE_PATH, {
+  maxAge: '7d',  // Cache for 7 days
+  etag: true,
+}));
 
 // Request logging
 app.use((req: Request, _res: Response, next: NextFunction) => {
@@ -125,6 +136,7 @@ const workflowStatus = new Map<string, WorkflowUpdate>();
  * Health check endpoint
  * Instance 13: Added Mandrel status check
  * Instance 22: Added database status check
+ * Image Generation: Added Gemini image generation status
  */
 app.get('/health', async (_req: Request, res: Response) => {
   const [claudeAvailable, mandrelAvailable] = await Promise.all([
@@ -138,6 +150,7 @@ app.get('/health', async (_req: Request, res: Response) => {
     claudeAvailable,
     mandrelAvailable,
     databaseAvailable: isDatabaseAvailable(),
+    imageGenerationAvailable: isImageGenerationAvailable(),
   });
 });
 

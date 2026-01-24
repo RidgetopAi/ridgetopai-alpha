@@ -108,8 +108,8 @@ export function HistoryView() {
       const query = searchQuery.toLowerCase();
       result = result.filter(
         (session) =>
-          session.intent.toLowerCase().includes(query) ||
-          session.interpretation.understood.toLowerCase().includes(query)
+          session.intent?.toLowerCase().includes(query) ||
+          session.interpretation?.understood?.toLowerCase().includes(query)
       );
     }
 
@@ -166,7 +166,7 @@ export function HistoryView() {
     const successful = filteredSessions.filter((s) => s.execution.failed === 0).length;
     const failed = filteredSessions.filter((s) => s.execution.failed > 0).length;
     const totalTasks = filteredSessions.reduce(
-      (sum, s) => sum + s.interpretation.tasks.length,
+      (sum, s) => sum + (s.interpretation?.tasks?.length || 0),
       0
     );
     const completedTasks = filteredSessions.reduce(
@@ -183,7 +183,7 @@ export function HistoryView() {
     };
 
     filteredSessions.forEach((session) => {
-      session.interpretation.tasks.forEach((task) => {
+      (session.interpretation?.tasks || []).forEach((task) => {
         const capability = TASK_TYPE_CAPABILITY[task.type] ?? 'INTERNAL';
         capabilityBreakdown[capability]++;
       });
@@ -509,7 +509,7 @@ function HistoryCard({
             </span>
             <span className="flex items-center gap-1">
               <Target className="w-3 h-3" />
-              {execution.completed}/{interpretation.tasks.length} tasks
+              {execution.completed}/{interpretation?.tasks?.length || 0} tasks
             </span>
             {execution.failed > 0 && (
               <span className="text-red-400">{execution.failed} failed</span>
@@ -518,7 +518,7 @@ function HistoryCard({
 
           {/* Capability Tags */}
           <div className="flex items-center gap-1 mt-2">
-            {getCapabilityTags(interpretation.tasks).map((cap) => (
+            {getCapabilityTags(interpretation?.tasks || []).map((cap) => (
               <span
                 key={cap.name}
                 className={`text-xs px-1.5 py-0.5 rounded ${cap.color}`}
@@ -579,7 +579,7 @@ function HistoryDetailPanel({
               {isSuccess ? 'Completed Successfully' : 'Completed with Errors'}
             </p>
             <p className="text-xs text-text-tertiary">
-              {execution.completed} of {interpretation.tasks.length} tasks completed
+              {execution.completed} of {interpretation?.tasks?.length || 0} tasks completed
             </p>
           </div>
         </div>
@@ -588,7 +588,7 @@ function HistoryDetailPanel({
         <div>
           <h3 className="text-sm font-medium text-text-primary">{session.intent}</h3>
           <p className="text-xs text-text-tertiary mt-2">
-            {interpretation.understood}
+            {interpretation?.understood || 'No interpretation'}
           </p>
         </div>
 
@@ -613,10 +613,10 @@ function HistoryDetailPanel({
         {/* Tasks */}
         <div>
           <h4 className="text-xs text-text-tertiary uppercase tracking-wide mb-3">
-            Tasks ({interpretation.tasks.length})
+            Tasks ({interpretation?.tasks?.length || 0})
           </h4>
           <div className="space-y-2">
-            {interpretation.tasks.map((task) => (
+            {(interpretation?.tasks || []).map((task) => (
               <TaskSummaryCard key={task.id} task={task} />
             ))}
           </div>

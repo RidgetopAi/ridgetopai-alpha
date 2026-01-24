@@ -7,8 +7,8 @@
  */
 
 import { useState } from 'react';
-import type { ContentWorkflow, ContentReviewDecision } from '../../lib/types/content-workflow';
-import { FORMAT_LABELS, AUDIENCE_LABELS, TONE_LABELS } from '../../lib/types/content-workflow';
+import type { ContentWorkflow, ContentReviewDecision, GeneratedImage } from '../../lib/types/content-workflow';
+import { FORMAT_LABELS, AUDIENCE_LABELS, TONE_LABELS, IMAGE_STYLE_LABELS } from '../../lib/types/content-workflow';
 import { useContentWorkflowStore } from '../../stores/content-workflow-store';
 import { ExpandablePanel } from '../shared/ExpandablePanel';
 
@@ -161,6 +161,56 @@ export function ContentReview({ workflow }: ContentReviewProps) {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Generated Images */}
+      {generation.images && generation.images.length > 0 && (
+        <div className="bg-cyan-900/20 rounded-lg p-3">
+          <div className="text-xs text-cyan-400 font-medium mb-3">
+            Generated Images ({generation.images.length})
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {generation.images.map((image: GeneratedImage) => (
+              <div key={image.id} className="bg-gray-800/50 rounded-lg overflow-hidden">
+                <a href={image.publicUrl} target="_blank" rel="noopener noreferrer">
+                  <img
+                    src={image.publicUrl}
+                    alt={image.purpose}
+                    className="w-full h-32 object-cover hover:opacity-90 transition-opacity"
+                  />
+                </a>
+                <div className="p-2 space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="px-1.5 py-0.5 bg-cyan-900/30 text-cyan-400 rounded text-xs">
+                      {image.placement}
+                    </span>
+                    <span className="px-1.5 py-0.5 bg-gray-700 text-gray-400 rounded text-xs">
+                      {IMAGE_STYLE_LABELS[image.style]}
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500 line-clamp-2">{image.purpose}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Image Generation Errors */}
+      {generation.imageErrors && generation.imageErrors.length > 0 && (
+        <div className="bg-red-900/20 rounded-lg p-3">
+          <div className="text-xs text-red-400 font-medium mb-2">
+            Image Generation Issues ({generation.imageErrors.length})
+          </div>
+          <ul className="text-xs text-gray-400 space-y-1">
+            {generation.imageErrors.map((err, index) => (
+              <li key={index} className="flex items-start gap-2">
+                <span className="text-red-400">!</span>
+                <span><strong>{err.placement}:</strong> {err.error}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 

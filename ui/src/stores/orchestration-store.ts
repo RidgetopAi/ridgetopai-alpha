@@ -73,6 +73,17 @@ export const useOrchestrationStore = create<OrchestrationStore>((set, get) => ({
       if (response.success && response.session) {
         const session = response.session;
 
+        // Validate session has required fields
+        if (!session.interpretation || !session.interpretation.tasks || !session.execution) {
+          console.error('[OrchestrationStore] Session missing required fields:', session);
+          set({
+            error: 'Session data incomplete from server',
+            sessionState: 'failed',
+            isLoading: false,
+          });
+          return;
+        }
+
         set((state) => ({
           sessions: [...state.sessions, session],
           activeSession: session,
@@ -225,9 +236,21 @@ export const useOrchestrationStore = create<OrchestrationStore>((set, get) => ({
       const response = await listOrchestrationSessions();
 
       if (response.success && response.sessions) {
-        // Load full sessions from backend
-        set({ sessions: response.sessions as OrchestrationSession[] });
-        console.log('[OrchestrationStore] Loaded', response.sessions.length, 'sessions from backend');
+        // Filter out any malformed sessions to prevent crashes
+        const validSessions = response.sessions.filter((session) => {
+          const isValid = session &&
+            session.interpretation &&
+            session.interpretation.tasks &&
+            Array.isArray(session.interpretation.tasks) &&
+            session.execution;
+          if (!isValid) {
+            console.warn('[OrchestrationStore] Skipping malformed session:', session?.sessionId);
+          }
+          return isValid;
+        }) as OrchestrationSession[];
+
+        set({ sessions: validSessions });
+        console.log('[OrchestrationStore] Loaded', validSessions.length, 'valid sessions from backend');
       }
     } catch (error) {
       console.error('[OrchestrationStore] Load sessions error:', error);
@@ -236,7 +259,7 @@ export const useOrchestrationStore = create<OrchestrationStore>((set, get) => ({
 
   getTask: (taskId) => {
     const session = get().activeSession;
-    if (!session) return undefined;
+    if (!session || !session.interpretation?.tasks) return undefined;
     return session.interpretation.tasks.find((t) => t.id === taskId);
   },
 

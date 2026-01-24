@@ -18,7 +18,7 @@ interface TaskListProps {
 }
 
 export function TaskList({ tasks }: TaskListProps) {
-  if (tasks.length === 0) {
+  if (!tasks || tasks.length === 0) {
     return (
       <div className="text-center py-4 text-gray-500 text-sm">
         No tasks generated

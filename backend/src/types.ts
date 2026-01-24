@@ -155,6 +155,30 @@ export const ContentToneSchema = z.enum([
 ]);
 export type ContentTone = z.infer<typeof ContentToneSchema>;
 
+// Image style options for AI image generation
+export const ImageStyleSchema = z.enum([
+  'photorealistic',
+  'illustration',
+  'digital_art',
+  'watercolor',
+  'sketch',
+  'minimalist',
+  'corporate',
+  'tech',
+]);
+export type ImageStyle = z.infer<typeof ImageStyleSchema>;
+
+// Image placement options
+export const ImagePlacementSchema = z.enum([
+  'hero',
+  'section-1',
+  'section-2',
+  'section-3',
+  'callout',
+  'conclusion',
+]);
+export type ImagePlacement = z.infer<typeof ImagePlacementSchema>;
+
 // Content brief from UI
 export const ContentBriefSchema = z.object({
   title: z.string().min(1),
@@ -166,6 +190,10 @@ export const ContentBriefSchema = z.object({
   keywords: z.array(z.string()).optional(),
   wordCount: z.number().optional(),
   additionalContext: z.string().optional(),
+  // Image generation options
+  generateImages: z.boolean().optional().default(false),
+  imageStyle: ImageStyleSchema.optional(),
+  maxImages: z.number().min(1).max(5).optional().default(3),
 });
 export type ContentBrief = z.infer<typeof ContentBriefSchema>;
 
@@ -221,6 +249,46 @@ export interface ContentRefinementResult {
   content: GeneratedContent;
   changesApplied: string[];
   rawOutput?: string;
+}
+
+// ==========================================
+// Image Generation Types (GROW Enhancement)
+// ==========================================
+
+// Image prompt suggested by Claude during content generation
+export interface ImagePromptSuggestion {
+  description: string;      // Full prompt for image generation
+  placement: ImagePlacement; // Where in content (hero, section-1, etc.)
+  purpose: string;          // Why this image (e.g., "illustrate concept")
+  style?: ImageStyle;       // Optional style override
+}
+
+// Successfully generated image
+export interface GeneratedImage {
+  id: string;               // UUID for the image
+  prompt: string;           // The prompt used to generate
+  placement: ImagePlacement; // Where it should go in content
+  purpose: string;          // Why this image
+  filePath: string;         // Local file path on VPS
+  publicUrl: string;        // URL to serve the image
+  mimeType: string;         // e.g., "image/png"
+  generatedAt: Date;
+  style: ImageStyle;
+}
+
+// Image generation error (for graceful degradation)
+export interface ImageGenerationError {
+  prompt: string;
+  placement: string;
+  error: string;
+  timestamp: Date;
+}
+
+// Extended content generation result with images
+export interface ContentGenerationResultWithImages extends ContentGenerationResult {
+  images?: GeneratedImage[];
+  imageErrors?: ImageGenerationError[];
+  imagePrompts?: ImagePromptSuggestion[];
 }
 
 // Content workflow status

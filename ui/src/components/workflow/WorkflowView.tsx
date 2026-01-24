@@ -75,9 +75,9 @@ export function WorkflowView() {
       const query = searchQuery.toLowerCase();
       result = result.filter(
         (session) =>
-          session.intent.toLowerCase().includes(query) ||
-          session.interpretation.understood.toLowerCase().includes(query) ||
-          session.sessionId.toLowerCase().includes(query)
+          session.intent?.toLowerCase().includes(query) ||
+          session.interpretation?.understood?.toLowerCase().includes(query) ||
+          session.sessionId?.toLowerCase().includes(query)
       );
     }
 
@@ -90,7 +90,7 @@ export function WorkflowView() {
           comparison = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
           break;
         case 'tasks':
-          comparison = a.interpretation.tasks.length - b.interpretation.tasks.length;
+          comparison = (a.interpretation?.tasks?.length || 0) - (b.interpretation?.tasks?.length || 0);
           break;
         case 'status':
           const statusOrder: Record<SessionState, number> = {
@@ -415,7 +415,7 @@ function WorkflowCard({
               </span>
               <span className="flex items-center gap-1">
                 <ListTodo className="w-3 h-3" />
-                {interpretation.tasks.length} tasks
+                {interpretation?.tasks?.length || 0} tasks
               </span>
               <span
                 className={`
@@ -460,9 +460,9 @@ function WorkflowCard({
           >
             <div className="p-4 pt-3 space-y-2">
               <p className="text-xs text-text-tertiary mb-2">
-                {interpretation.understood}
+                {interpretation?.understood || 'No interpretation available'}
               </p>
-              {interpretation.tasks.map((task) => (
+              {(interpretation?.tasks || []).map((task) => (
                 <TaskRow key={task.id} task={task} />
               ))}
             </div>
@@ -588,8 +588,8 @@ function WorkflowDetailPanel({ session, onClose }: WorkflowDetailPanelProps) {
           <h4 className="text-xs text-text-tertiary uppercase tracking-wide mb-2">
             AI Understanding
           </h4>
-          <p className="text-sm text-text-secondary">{interpretation.understood}</p>
-          {interpretation.reasoning && (
+          <p className="text-sm text-text-secondary">{interpretation?.understood || 'No interpretation'}</p>
+          {interpretation?.reasoning && (
             <p className="text-xs text-text-tertiary mt-2 italic">
               "{interpretation.reasoning}"
             </p>
@@ -597,7 +597,7 @@ function WorkflowDetailPanel({ session, onClose }: WorkflowDetailPanelProps) {
         </div>
 
         {/* Warnings */}
-        {interpretation.warnings && interpretation.warnings.length > 0 && (
+        {interpretation?.warnings && interpretation.warnings.length > 0 && (
           <div className="bg-yellow-900/20 border border-yellow-500/30 rounded-lg p-3">
             <h4 className="text-xs text-yellow-400 uppercase tracking-wide mb-2">Warnings</h4>
             <ul className="space-y-1">
@@ -613,10 +613,10 @@ function WorkflowDetailPanel({ session, onClose }: WorkflowDetailPanelProps) {
         {/* Tasks */}
         <div>
           <h4 className="text-xs text-text-tertiary uppercase tracking-wide mb-2">
-            Tasks ({interpretation.tasks.length})
+            Tasks ({interpretation?.tasks?.length || 0})
           </h4>
           <div className="space-y-2">
-            {interpretation.tasks.map((task) => (
+            {(interpretation?.tasks || []).map((task) => (
               <DetailTaskCard key={task.id} task={task} />
             ))}
           </div>

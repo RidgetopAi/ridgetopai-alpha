@@ -13,8 +13,11 @@ import { spawn, type ChildProcess } from 'child_process';
 import type {
   ContentBrief,
   ContentGenerationResult,
+  ContentGenerationResultWithImages,
   ContentRefinementResult,
   GeneratedContent,
+  ImagePromptSuggestion,
+  ImageStyle,
   TaskResult,
   Confidence,
 } from './types.js';
@@ -157,7 +160,20 @@ ${toneGuide}
 2. Match the specified format, audience, and tone
 3. Make the content engaging and valuable
 4. Include all key points if specified
+${brief.generateImages ? `5. Suggest ${brief.maxImages || 3} images to enhance the content (see Image Suggestions section)` : ''}
+${brief.generateImages ? `
+## Image Suggestions
 
+Since images are requested for this content, suggest compelling images that would enhance reader engagement.
+
+For each image, provide:
+1. A detailed description that can be used as a prompt for AI image generation (50-100 words, be specific about composition, subjects, colors, mood)
+2. Placement: where in the content the image should appear (hero, section-1, section-2, section-3, callout, or conclusion)
+3. Purpose: why this image enhances the content (e.g., "illustrates the main concept", "breaks up text", "adds visual interest")
+${brief.imageStyle ? `4. Use the "${brief.imageStyle}" style for all images` : '4. Suggest an appropriate style for each image'}
+
+Make image descriptions vivid and specific - they will be used to generate actual images via AI.
+` : ''}
 ## Output Format
 
 You MUST respond with a JSON object in this exact format (and nothing else):
@@ -182,7 +198,15 @@ You MUST respond with a JSON object in this exact format (and nothing else):
       "title": "Alternative title or angle",
       "approach": "Brief description of the alternative approach"
     }
-  ]
+  ]${brief.generateImages ? `,
+  "imagePrompts": [
+    {
+      "description": "Detailed description for AI image generation (50-100 words)",
+      "placement": "hero" | "section-1" | "section-2" | "section-3" | "callout" | "conclusion",
+      "purpose": "Why this image enhances the content",
+      "style": "photorealistic" | "illustration" | "digital_art" | "watercolor" | "sketch" | "minimalist" | "corporate" | "tech"
+    }
+  ]` : ''}
 }
 \`\`\`
 
@@ -190,7 +214,9 @@ Important:
 - Generate complete, publish-ready content
 - Use markdown formatting in the body
 - Be creative but stay within the brief parameters
-- If the brief is unclear or incomplete, do your best and note it in suggestions`;
+- If the brief is unclear or incomplete, do your best and note it in suggestions${brief.generateImages ? `
+- Image descriptions should be detailed enough for AI image generation
+- Place the hero image at the top, other images to break up long sections` : ''}`;
 }
 
 /**
@@ -262,8 +288,9 @@ Important:
 
 /**
  * Parse content generation output
+ * Updated to extract imagePrompts for image generation
  */
-function parseContentGenerationOutput(output: string): ContentGenerationResult {
+function parseContentGenerationOutput(output: string): ContentGenerationResultWithImages {
   // Try to find JSON in the output
   const jsonMatch = output.match(/```json\s*([\s\S]*?)\s*```/);
 
@@ -281,6 +308,7 @@ function parseContentGenerationOutput(output: string): ContentGenerationResult {
         confidence: (parsed.confidence as Confidence) || 'medium',
         suggestions: parsed.suggestions,
         alternatives: parsed.alternatives,
+        imagePrompts: parsed.imagePrompts as ImagePromptSuggestion[] | undefined,
         rawOutput: output,
       };
     } catch (e) {
@@ -296,6 +324,7 @@ function parseContentGenerationOutput(output: string): ContentGenerationResult {
       confidence: (parsed.confidence as Confidence) || 'low',
       suggestions: parsed.suggestions,
       alternatives: parsed.alternatives,
+      imagePrompts: parsed.imagePrompts as ImagePromptSuggestion[] | undefined,
       rawOutput: output,
     };
   } catch {
@@ -365,11 +394,12 @@ function parseContentRefinementOutput(output: string): ContentRefinementResult {
 /**
  * Execute content generation using Claude CLI
  * Instance 13: Added Mandrel context retrieval for institutional memory
+ * Image Generation: Added Gemini image generation when brief.generateImages is true
  */
 export async function runContentGeneration(
   brief: ContentBrief,
   config: Partial<ContentRunnerConfig> = {}
-): Promise<TaskResult<ContentGenerationResult>> {
+): Promise<TaskResult<ContentGenerationResultWithImages>> {
   const { timeoutMs, brandContext } = { ...DEFAULT_CONFIG, ...config };
   const startTime = Date.now();
 
@@ -469,11 +499,56 @@ export async function runContentGeneration(
       // Parse the output
       const result = parseContentGenerationOutput(stdout);
 
-      resolve({
-        success: true,
-        data: result,
-        durationMs,
-      });
+      // Image generation phase (if requested)
+      // Wrap in async IIFE since close handler is not async
+      (async () => {
+        if (brief.generateImages && result.imagePrompts && result.imagePrompts.length > 0) {
+          console.log(`[ContentRunner] Image generation requested, found ${result.imagePrompts.length} prompts`);
+
+          try {
+            // Dynamic import to avoid circular dependencies and only load when needed
+            const { generateImages, isImageGenerationAvailable } = await import('./imageService.js');
+
+            if (isImageGenerationAvailable()) {
+              console.log(`[ContentRunner] Generating images with style: ${brief.imageStyle || 'digital_art'}`);
+
+              const imageResult = await generateImages(
+                result.imagePrompts,
+                brief.imageStyle || 'digital_art'
+              );
+
+              result.images = imageResult.images;
+              result.imageErrors = imageResult.errors;
+
+              console.log(`[ContentRunner] Image generation complete: ${imageResult.images.length} succeeded, ${imageResult.errors.length} failed`);
+            } else {
+              console.warn('[ContentRunner] Image generation requested but Gemini API not configured');
+              result.imageErrors = result.imagePrompts.map((p) => ({
+                prompt: p.description,
+                placement: p.placement,
+                error: 'Gemini API not configured - set GEMINI_API_KEY environment variable',
+                timestamp: new Date(),
+              }));
+            }
+          } catch (imageError) {
+            const errorMsg = imageError instanceof Error ? imageError.message : 'Unknown image generation error';
+            console.error(`[ContentRunner] Image generation failed: ${errorMsg}`);
+            result.imageErrors = result.imagePrompts.map((p) => ({
+              prompt: p.description,
+              placement: p.placement,
+              error: errorMsg,
+              timestamp: new Date(),
+            }));
+          }
+        }
+
+        const totalDurationMs = Date.now() - startTime;
+        resolve({
+          success: true,
+          data: result,
+          durationMs: totalDurationMs,
+        });
+      })();
     });
 
     // Set timeout

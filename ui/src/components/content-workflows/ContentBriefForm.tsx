@@ -9,11 +9,13 @@ import type {
   ContentFormat,
   AudienceType,
   ContentTone,
+  ImageStyle,
 } from '../../lib/types/content-workflow';
 import {
   FORMAT_LABELS,
   AUDIENCE_LABELS,
   TONE_LABELS,
+  IMAGE_STYLE_LABELS,
 } from '../../lib/types/content-workflow';
 import { useContentWorkflowStore } from '../../stores/content-workflow-store';
 
@@ -34,6 +36,9 @@ export function ContentBriefForm({ onSubmit }: ContentBriefFormProps) {
     keywords: [],
     wordCount: undefined,
     additionalContext: '',
+    generateImages: false,
+    imageStyle: 'digital_art',
+    maxImages: 2,
   });
 
   const [keyPointInput, setKeyPointInput] = useState('');
@@ -88,6 +93,7 @@ export function ContentBriefForm({ onSubmit }: ContentBriefFormProps) {
   const formatOptions: ContentFormat[] = ['blog_post', 'tweet_thread', 'documentation', 'email', 'announcement', 'case_study'];
   const audienceOptions: AudienceType[] = ['developers', 'business', 'general', 'internal'];
   const toneOptions: ContentTone[] = ['professional', 'conversational', 'technical', 'educational'];
+  const imageStyleOptions: ImageStyle[] = ['photorealistic', 'illustration', 'digital_art', 'watercolor', 'sketch', 'minimalist', 'corporate', 'tech'];
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
@@ -284,6 +290,64 @@ export function ContentBriefForm({ onSubmit }: ContentBriefFormProps) {
           className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"
           disabled={isSubmitting}
         />
+      </div>
+
+      {/* Image Generation Section */}
+      <div className="border border-gray-700 rounded-md p-3 space-y-3">
+        <div className="flex items-center justify-between">
+          <label className="text-sm font-medium text-gray-300">
+            AI Image Generation
+          </label>
+          <button
+            type="button"
+            onClick={() => setFormData({ ...formData, generateImages: !formData.generateImages })}
+            className={`
+              relative inline-flex h-6 w-11 items-center rounded-full transition-colors
+              ${formData.generateImages ? 'bg-green-600' : 'bg-gray-600'}
+            `}
+            disabled={isSubmitting}
+          >
+            <span
+              className={`
+                inline-block h-4 w-4 transform rounded-full bg-white transition-transform
+                ${formData.generateImages ? 'translate-x-6' : 'translate-x-1'}
+              `}
+            />
+          </button>
+        </div>
+
+        {formData.generateImages && (
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">Image Style</label>
+              <select
+                value={formData.imageStyle}
+                onChange={(e) => setFormData({ ...formData, imageStyle: e.target.value as ImageStyle })}
+                className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                disabled={isSubmitting}
+              >
+                {imageStyleOptions.map((style) => (
+                  <option key={style} value={style}>
+                    {IMAGE_STYLE_LABELS[style]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">Max Images</label>
+              <select
+                value={formData.maxImages}
+                onChange={(e) => setFormData({ ...formData, maxImages: parseInt(e.target.value) })}
+                className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                disabled={isSubmitting}
+              >
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <option key={n} value={n}>{n}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Submit Button */}

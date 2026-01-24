@@ -250,7 +250,8 @@ async function runClaudeAnalysis(prompt: string): Promise<string> {
     let killed = false;
 
     // Instance 18: Implement proper timeout handling
-    const timeoutMs = 120000; // 2 minutes
+    // Increased to 10 minutes for complex intents (image generation can take time)
+    const timeoutMs = 600000; // 10 minutes
     const timeoutHandle = setTimeout(() => {
       if (!killed) {
         killed = true;
@@ -429,8 +430,19 @@ export function updateTaskStatus(
 // ==========================================
 
 /**
+ * Result from a workflow dispatch
+ */
+interface DispatchResult {
+  success: boolean;
+  result?: unknown;
+  error?: string;
+}
+
+/**
  * Dispatch a task to its appropriate workflow
  * Returns the workflow ID if successful
+ *
+ * Fixed: Now properly tracks task state through running → completed/failed
  */
 export async function dispatchTask(
   session: OrchestrationSession,
@@ -444,22 +456,28 @@ export async function dispatchTask(
   }
 
   const workflowId = `orch-${session.sessionId}-${task.id}`;
+  task.workflowId = workflowId;
 
   console.log(`[Orchestrator] Dispatching task: ${task.title} (${task.type})`);
 
+  // Mark as running BEFORE calling the workflow
+  updateTaskStatus(session.sessionId, taskId, 'running');
+
   try {
+    let dispatchResult: DispatchResult;
+
     switch (task.type) {
       case 'bugfix':
-        await dispatchBugfix(workflowId, task, baseUrl);
+        dispatchResult = await dispatchBugfix(workflowId, task, baseUrl);
         break;
       case 'content':
-        await dispatchContent(workflowId, task, baseUrl);
+        dispatchResult = await dispatchContent(workflowId, task, baseUrl);
         break;
       case 'support':
-        await dispatchSupport(workflowId, task, baseUrl);
+        dispatchResult = await dispatchSupport(workflowId, task, baseUrl);
         break;
       case 'monitoring':
-        await dispatchMonitoring(workflowId, task, baseUrl);
+        dispatchResult = await dispatchMonitoring(workflowId, task, baseUrl);
         break;
       case 'analysis':
       case 'review':
@@ -471,11 +489,19 @@ export async function dispatchTask(
         return workflowId;
       default:
         console.log(`[Orchestrator] Unknown task type: ${task.type}`);
+        updateTaskStatus(session.sessionId, taskId, 'failed', undefined, `Unknown task type: ${task.type}`);
         return null;
     }
 
-    task.workflowId = workflowId;
-    updateTaskStatus(session.sessionId, taskId, 'dispatched');
+    // Update status based on workflow result
+    if (dispatchResult.success) {
+      console.log(`[Orchestrator] Task ${taskId} completed successfully`);
+      updateTaskStatus(session.sessionId, taskId, 'completed', dispatchResult.result);
+    } else {
+      console.error(`[Orchestrator] Task ${taskId} failed: ${dispatchResult.error}`);
+      updateTaskStatus(session.sessionId, taskId, 'failed', undefined, dispatchResult.error);
+    }
+
     return workflowId;
   } catch (error) {
     console.error(`[Orchestrator] Failed to dispatch task ${taskId}:`, error);
@@ -491,7 +517,7 @@ async function dispatchBugfix(
   workflowId: string,
   task: GeneratedTask,
   baseUrl: string
-): Promise<void> {
+): Promise<DispatchResult> {
   const params = task.parameters as {
     title?: string;
     description?: string;
@@ -515,9 +541,19 @@ async function dispatchBugfix(
     body: JSON.stringify(body),
   });
 
-  if (!response.ok) {
-    throw new Error(`Bugfix dispatch failed: ${response.status}`);
+  const data = await response.json() as { success?: boolean; error?: string; analysis?: unknown };
+
+  if (!response.ok || !data.success) {
+    return {
+      success: false,
+      error: data.error || `Bugfix dispatch failed: ${response.status}`,
+    };
   }
+
+  return {
+    success: true,
+    result: { analysis: data.analysis },
+  };
 }
 
 /**
@@ -527,7 +563,7 @@ async function dispatchContent(
   workflowId: string,
   task: GeneratedTask,
   baseUrl: string
-): Promise<void> {
+): Promise<DispatchResult> {
   const params = task.parameters as {
     title?: string;
     topic?: string;
@@ -557,9 +593,19 @@ async function dispatchContent(
     body: JSON.stringify(body),
   });
 
-  if (!response.ok) {
-    throw new Error(`Content dispatch failed: ${response.status}`);
+  const data = await response.json() as { success?: boolean; error?: string; generation?: unknown };
+
+  if (!response.ok || !data.success) {
+    return {
+      success: false,
+      error: data.error || `Content dispatch failed: ${response.status}`,
+    };
   }
+
+  return {
+    success: true,
+    result: { generation: data.generation },
+  };
 }
 
 /**
@@ -569,7 +615,7 @@ async function dispatchSupport(
   workflowId: string,
   task: GeneratedTask,
   baseUrl: string
-): Promise<void> {
+): Promise<DispatchResult> {
   const params = task.parameters as {
     title?: string;
     description?: string;
@@ -601,9 +647,19 @@ async function dispatchSupport(
     body: JSON.stringify(body),
   });
 
-  if (!response.ok) {
-    throw new Error(`Support dispatch failed: ${response.status}`);
+  const data = await response.json() as { success?: boolean; error?: string; analysis?: unknown };
+
+  if (!response.ok || !data.success) {
+    return {
+      success: false,
+      error: data.error || `Support dispatch failed: ${response.status}`,
+    };
   }
+
+  return {
+    success: true,
+    result: data.analysis,
+  };
 }
 
 /**
@@ -613,7 +669,7 @@ async function dispatchMonitoring(
   workflowId: string,
   task: GeneratedTask,
   baseUrl: string
-): Promise<void> {
+): Promise<DispatchResult> {
   const params = task.parameters as {
     title?: string;
     description?: string;
@@ -645,9 +701,19 @@ async function dispatchMonitoring(
     body: JSON.stringify(body),
   });
 
-  if (!response.ok) {
-    throw new Error(`Monitoring dispatch failed: ${response.status}`);
+  const data = await response.json() as { success?: boolean; error?: string; analysis?: unknown };
+
+  if (!response.ok || !data.success) {
+    return {
+      success: false,
+      error: data.error || `Monitoring dispatch failed: ${response.status}`,
+    };
   }
+
+  return {
+    success: true,
+    result: data.analysis,
+  };
 }
 
 /**
