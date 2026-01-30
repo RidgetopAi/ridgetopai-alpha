@@ -10,12 +10,67 @@
  */
 
 import { useState } from 'react';
-import type { ContentWorkflow } from '../../lib/types/content-workflow';
-import { CONTENT_STATE_LABELS, FORMAT_LABELS } from '../../lib/types/content-workflow';
+import type { ContentWorkflow, GeneratedImage } from '../../lib/types/content-workflow';
+import { CONTENT_STATE_LABELS, FORMAT_LABELS, IMAGE_STYLE_LABELS } from '../../lib/types/content-workflow';
 import { useContentWorkflowStore } from '../../stores/content-workflow-store';
 import { ContentBriefForm } from './ContentBriefForm';
 import { ContentProgress } from './ContentProgress';
 import { ContentReview } from './ContentReview';
+import { ExpandablePanel } from '../shared/ExpandablePanel';
+
+/**
+ * Extract actual content body from potentially JSON-wrapped content
+ * Handles cases where Claude output wasn't properly parsed
+ */
+function extractBody(body: string): string {
+  if (!body) return '';
+
+  // Check if body looks like JSON (starts with { or [)
+  const trimmed = body.trim();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      // If it's a content object, extract the body
+      if (parsed.content?.body) {
+        return parsed.content.body;
+      }
+      if (typeof parsed.body === 'string') {
+        return parsed.body;
+      }
+    } catch {
+      // Not valid JSON, use as-is
+    }
+  }
+
+  return body;
+}
+
+/**
+ * Simple markdown-to-HTML renderer for content preview
+ */
+function renderMarkdown(markdown: string): string {
+  if (!markdown) return '';
+
+  return markdown
+    // Headers
+    .replace(/^### (.+)$/gm, '<h3 class="text-lg font-semibold text-white mt-4 mb-2">$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2 class="text-xl font-bold text-white mt-6 mb-3">$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1 class="text-2xl font-bold text-white mt-6 mb-4">$1</h1>')
+    // Bold
+    .replace(/\*\*(.+?)\*\*/g, '<strong class="font-semibold text-white">$1</strong>')
+    // Italic
+    .replace(/\*(.+?)\*/g, '<em class="italic">$1</em>')
+    // Bullet lists
+    .replace(/^- (.+)$/gm, '<li class="ml-4 text-gray-300">$1</li>')
+    // Code blocks
+    .replace(/```(\w+)?\n([\s\S]*?)```/g, '<pre class="bg-gray-800 p-3 rounded-lg overflow-x-auto my-3"><code class="text-green-400 text-sm">$2</code></pre>')
+    // Inline code
+    .replace(/`([^`]+)`/g, '<code class="bg-gray-800 px-1 rounded text-green-400 text-sm">$1</code>')
+    // Paragraphs (lines not starting with HTML tags)
+    .replace(/^(?!<[hlupc])(.+)$/gm, '<p class="text-gray-300 mb-3">$1</p>')
+    // Wrap consecutive li elements in ul
+    .replace(/(<li[^>]*>.*<\/li>\n?)+/g, '<ul class="list-disc my-3">$&</ul>');
+}
 
 export function ContentPanel() {
   const { workflows, activeWorkflow, selectWorkflow, deleteWorkflow } = useContentWorkflowStore();
@@ -35,7 +90,8 @@ export function ContentPanel() {
   const handleCopyContent = (workflow: ContentWorkflow) => {
     const content = workflow.finalContent?.content || workflow.generation?.content;
     if (content) {
-      const text = `# ${content.title}\n\n${content.body}`;
+      const body = extractBody(content.body || '');
+      const text = `# ${content.title}\n\n${body}`;
       navigator.clipboard.writeText(text);
     }
   };
@@ -52,9 +108,9 @@ export function ContentPanel() {
       content = (content as { content: typeof content }).content;
     }
 
-    // Ensure we have title and body
+    // Ensure we have title and body - extract from JSON if needed
     const title = content.title || 'Untitled';
-    const body = content.body || '';
+    const body = extractBody(content.body || '');
 
     let fileContent: string;
     let filename: string;
@@ -224,70 +280,109 @@ export function ContentPanel() {
 
           {/* Completed */}
           {workflow.state === 'completed' && workflow.finalContent && (
-            <div className="space-y-4">
-              <div className="bg-green-900/20 rounded-lg p-4 text-center">
-                <div className="text-green-400 text-lg mb-2">Content Ready!</div>
-                <p className="text-gray-400 text-sm">
-                  Your {FORMAT_LABELS[workflow.brief.format].toLowerCase()} is ready to use.
-                </p>
-              </div>
-
-              {/* Final Content Preview */}
-              <div className="bg-gray-800/50 rounded-lg p-4">
-                <h4 className="text-white font-medium mb-2">{workflow.finalContent.content.title}</h4>
-                <div className="bg-gray-900/50 rounded p-3 max-h-48 overflow-y-auto">
-                  <pre className="text-gray-300 text-sm whitespace-pre-wrap font-sans">
-                    {workflow.finalContent.content.body}
-                  </pre>
+            <ExpandablePanel
+              title={`Content: ${workflow.finalContent.content.title}`}
+              accent="green"
+            >
+              <div className="space-y-4">
+                <div className="bg-green-900/20 rounded-lg p-4 text-center">
+                  <div className="text-green-400 text-lg mb-2">Content Ready!</div>
+                  <p className="text-gray-400 text-sm">
+                    Your {FORMAT_LABELS[workflow.brief.format].toLowerCase()} is ready to use.
+                  </p>
                 </div>
-              </div>
 
-              {/* Export options */}
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-gray-500">
-                  {workflow.finalContent.content.metadata?.wordCount || 0} words
-                </span>
+                {/* Final Content Preview - Rendered Markdown */}
+                <div className="bg-gray-800/50 rounded-lg p-4">
+                  <h4 className="text-xl font-bold text-white mb-4">{workflow.finalContent.content.title}</h4>
+                  <div
+                    className="prose prose-invert max-w-none"
+                    dangerouslySetInnerHTML={{
+                      __html: renderMarkdown(extractBody(workflow.finalContent.content.body))
+                    }}
+                  />
+                </div>
+
+                {/* Generated Images */}
+                {workflow.generation?.images && workflow.generation.images.length > 0 && (
+                  <div className="bg-cyan-900/20 rounded-lg p-3">
+                    <div className="text-xs text-cyan-400 font-medium mb-3">
+                      Generated Images ({workflow.generation.images.length})
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      {workflow.generation.images.map((image: GeneratedImage) => (
+                        <div key={image.id} className="bg-gray-800/50 rounded-lg overflow-hidden">
+                          <a href={image.publicUrl} target="_blank" rel="noopener noreferrer">
+                            <img
+                              src={image.publicUrl}
+                              alt={image.purpose}
+                              className="w-full h-32 object-cover hover:opacity-90 transition-opacity"
+                            />
+                          </a>
+                          <div className="p-2 space-y-1">
+                            <div className="flex items-center gap-2">
+                              <span className="px-1.5 py-0.5 bg-cyan-900/30 text-cyan-400 rounded text-xs">
+                                {image.placement}
+                              </span>
+                              <span className="px-1.5 py-0.5 bg-gray-700 text-gray-400 rounded text-xs">
+                                {IMAGE_STYLE_LABELS[image.style]}
+                              </span>
+                            </div>
+                            <p className="text-xs text-gray-500 line-clamp-2">{image.purpose}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Export options */}
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-gray-500">
+                    {workflow.finalContent.content.metadata?.wordCount || 0} words
+                  </span>
+                  <div className="flex gap-2">
+                    <span className="text-xs text-gray-500">Download:</span>
+                    <button
+                      onClick={() => handleDownload(workflow, 'markdown')}
+                      className="px-2 py-1 bg-gray-700 text-gray-300 rounded text-xs hover:bg-green-600 hover:text-white transition-colors"
+                      title="Download as Markdown"
+                    >
+                      .MD
+                    </button>
+                    <button
+                      onClick={() => handleDownload(workflow, 'html')}
+                      className="px-2 py-1 bg-gray-700 text-gray-300 rounded text-xs hover:bg-green-600 hover:text-white transition-colors"
+                      title="Download as HTML"
+                    >
+                      .HTML
+                    </button>
+                    <button
+                      onClick={() => handleDownload(workflow, 'plain')}
+                      className="px-2 py-1 bg-gray-700 text-gray-300 rounded text-xs hover:bg-green-600 hover:text-white transition-colors"
+                      title="Download as Plain Text"
+                    >
+                      .TXT
+                    </button>
+                  </div>
+                </div>
+
                 <div className="flex gap-2">
-                  <span className="text-xs text-gray-500">Download:</span>
                   <button
-                    onClick={() => handleDownload(workflow, 'markdown')}
-                    className="px-2 py-1 bg-gray-700 text-gray-300 rounded text-xs hover:bg-green-600 hover:text-white transition-colors"
-                    title="Download as Markdown"
+                    onClick={() => handleCopyContent(workflow)}
+                    className="flex-1 px-4 py-2 bg-green-600 text-white rounded-md font-medium hover:bg-green-500 transition-colors"
                   >
-                    .MD
+                    Copy to Clipboard
                   </button>
                   <button
-                    onClick={() => handleDownload(workflow, 'html')}
-                    className="px-2 py-1 bg-gray-700 text-gray-300 rounded text-xs hover:bg-green-600 hover:text-white transition-colors"
-                    title="Download as HTML"
+                    onClick={handleNewWorkflow}
+                    className="px-4 py-2 bg-gray-700 text-white rounded-md font-medium hover:bg-gray-600 transition-colors"
                   >
-                    .HTML
-                  </button>
-                  <button
-                    onClick={() => handleDownload(workflow, 'plain')}
-                    className="px-2 py-1 bg-gray-700 text-gray-300 rounded text-xs hover:bg-green-600 hover:text-white transition-colors"
-                    title="Download as Plain Text"
-                  >
-                    .TXT
+                    New Content
                   </button>
                 </div>
               </div>
-
-              <div className="flex gap-2">
-                <button
-                  onClick={() => handleCopyContent(workflow)}
-                  className="flex-1 px-4 py-2 bg-green-600 text-white rounded-md font-medium hover:bg-green-500 transition-colors"
-                >
-                  Copy to Clipboard
-                </button>
-                <button
-                  onClick={handleNewWorkflow}
-                  className="px-4 py-2 bg-gray-700 text-white rounded-md font-medium hover:bg-gray-600 transition-colors"
-                >
-                  New Content
-                </button>
-              </div>
-            </div>
+            </ExpandablePanel>
           )}
 
           {/* Failed */}

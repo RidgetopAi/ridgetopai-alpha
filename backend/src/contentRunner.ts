@@ -29,7 +29,7 @@ export interface ContentRunnerConfig {
 }
 
 const DEFAULT_CONFIG: ContentRunnerConfig = {
-  timeoutMs: 300000, // 5 minutes
+  timeoutMs: 590000, // 9m50s - slightly less than nginx 600s to avoid race condition
 };
 
 // Format-specific guidance
@@ -287,60 +287,190 @@ Important:
 }
 
 /**
+ * Attempt to repair malformed JSON (common issues from LLM output)
+ * - Escapes literal newlines inside string values
+ * - Fixes trailing commas
+ * - Handles unescaped backslashes
+ */
+function repairJson(jsonStr: string): string {
+  // Strategy: Find string values and escape newlines within them
+  // This regex-based approach handles most common cases
+  let repaired = jsonStr;
+
+  // Escape literal newlines inside strings (but not \n which is already escaped)
+  // Match strings and process their contents
+  repaired = repaired.replace(/"([^"\\]|\\.)*"/g, (match) => {
+    // Inside the string, replace actual newlines with \n
+    return match.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
+  });
+
+  // Remove trailing commas before } or ]
+  repaired = repaired.replace(/,(\s*[}\]])/g, '$1');
+
+  return repaired;
+}
+
+/**
+ * Try to extract content from malformed/truncated JSON by finding key fields
+ */
+function extractContentFromBrokenJson(jsonStr: string): { title?: string; body?: string } | null {
+  // Try to extract title
+  const titleMatch = jsonStr.match(/"title"\s*:\s*"([^"]+)"/);
+
+  // Try to extract body - handle truncated JSON where closing quote may be missing
+  // Look for "body": " and extract everything reasonable after it
+  const bodyStartMatch = jsonStr.match(/"body"\s*:\s*"/);
+  if (!bodyStartMatch) return titleMatch ? { title: titleMatch[1] } : null;
+
+  const bodyStart = bodyStartMatch.index! + bodyStartMatch[0].length;
+  let bodyEnd = jsonStr.length; // Default to end if no closing quote found
+  let escaped = false;
+  let foundClose = false;
+
+  // Find the end of the body string, handling escapes
+  for (let i = bodyStart; i < jsonStr.length; i++) {
+    const char = jsonStr[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      bodyEnd = i;
+      foundClose = true;
+      break;
+    }
+  }
+
+  // If no closing quote found (truncated), try to find a reasonable end point
+  // Look for common JSON patterns that indicate body ended
+  if (!foundClose) {
+    // Try to find where the body likely ends - before ",\n  " or similar patterns
+    const possibleEnds = [
+      jsonStr.lastIndexOf('",'),
+      jsonStr.lastIndexOf('"\n'),
+      jsonStr.lastIndexOf('"}'),
+    ].filter(i => i > bodyStart);
+
+    if (possibleEnds.length > 0) {
+      bodyEnd = Math.max(...possibleEnds);
+    }
+    console.log(`[ContentRunner] Body extraction: truncated JSON, using best-effort end at position ${bodyEnd}`);
+  }
+
+  let body = jsonStr.slice(bodyStart, bodyEnd);
+
+  // Unescape JSON string escapes
+  body = body
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\');
+
+  console.log(`[ContentRunner] Extracted body length: ${body.length} chars`);
+
+  return {
+    title: titleMatch ? titleMatch[1] : undefined,
+    body: body || undefined,
+  };
+}
+
+/**
  * Parse content generation output
  * Updated to extract imagePrompts for image generation
+ * Enhanced with robust JSON repair for LLM output
  */
 function parseContentGenerationOutput(output: string): ContentGenerationResultWithImages {
   // Try to find JSON in the output
   const jsonMatch = output.match(/```json\s*([\s\S]*?)\s*```/);
 
-  if (jsonMatch) {
+  const jsonStr = jsonMatch ? jsonMatch[1] : output.trim();
+
+  // Strategy 1: Try direct parse
+  try {
+    const parsed = JSON.parse(jsonStr);
+    console.log('[ContentRunner] JSON parsed successfully (direct)');
+    return buildResult(parsed, output, 'medium');
+  } catch (e1) {
+    console.log('[ContentRunner] Direct parse failed, trying repair...');
+
+    // Strategy 2: Try with JSON repair
     try {
-      const parsed = JSON.parse(jsonMatch[1]);
+      const repaired = repairJson(jsonStr);
+      const parsed = JSON.parse(repaired);
+      console.log('[ContentRunner] JSON parsed successfully (repaired)');
+      return buildResult(parsed, output, 'medium');
+    } catch (e2) {
+      console.log('[ContentRunner] Repair parse failed, trying extraction...');
+
+      // Strategy 3: Extract key fields from broken JSON
+      const extracted = extractContentFromBrokenJson(jsonStr);
+      if (extracted && (extracted.title || extracted.body)) {
+        console.log('[ContentRunner] Extracted content from broken JSON');
+        return {
+          content: {
+            title: extracted.title || 'Generated Content',
+            body: extracted.body || '',
+            metadata: {
+              wordCount: (extracted.body || '').split(/\s+/).length,
+            },
+          },
+          confidence: 'low',
+          rawOutput: output,
+        };
+      }
+
+      // Strategy 4: Final fallback - return raw output
+      console.error('[ContentRunner] All parse strategies failed');
       return {
         content: {
-          title: parsed.content?.title || 'Untitled',
-          body: parsed.content?.body || '',
-          summary: parsed.content?.summary,
-          callToAction: parsed.content?.callToAction,
-          metadata: parsed.content?.metadata,
+          title: 'Generated Content',
+          body: output,
+          metadata: {
+            wordCount: output.split(/\s+/).length,
+          },
         },
-        confidence: (parsed.confidence as Confidence) || 'medium',
-        suggestions: parsed.suggestions,
-        alternatives: parsed.alternatives,
-        imagePrompts: parsed.imagePrompts as ImagePromptSuggestion[] | undefined,
+        confidence: 'low',
         rawOutput: output,
       };
-    } catch (e) {
-      console.error('[ContentRunner] Failed to parse JSON from output:', e);
     }
   }
+}
 
-  // Fallback: try to parse entire output as JSON
-  try {
-    const parsed = JSON.parse(output.trim());
-    return {
-      content: parsed.content || { title: 'Untitled', body: output },
-      confidence: (parsed.confidence as Confidence) || 'low',
-      suggestions: parsed.suggestions,
-      alternatives: parsed.alternatives,
-      imagePrompts: parsed.imagePrompts as ImagePromptSuggestion[] | undefined,
-      rawOutput: output,
-    };
-  } catch {
-    // Final fallback: return raw output as content
-    return {
-      content: {
-        title: 'Generated Content',
-        body: output,
-        metadata: {
-          wordCount: output.split(/\s+/).length,
-        },
+/**
+ * Helper to build result from parsed JSON
+ */
+function buildResult(
+  parsed: Record<string, unknown>,
+  rawOutput: string,
+  defaultConfidence: Confidence
+): ContentGenerationResultWithImages {
+  const content = parsed.content as Record<string, unknown> | undefined;
+  const bodyText = (content?.body as string) || '';
+  const meta = content?.metadata as { wordCount?: number; readTime?: number; targetKeywords?: string[] } | undefined;
+
+  return {
+    content: {
+      title: (content?.title as string) || 'Untitled',
+      body: bodyText,
+      summary: content?.summary as string | undefined,
+      callToAction: content?.callToAction as string | undefined,
+      metadata: {
+        wordCount: meta?.wordCount ?? bodyText.split(/\s+/).length,
+        readTime: meta?.readTime,
+        targetKeywords: meta?.targetKeywords,
       },
-      confidence: 'low',
-      rawOutput: output,
-    };
-  }
+    },
+    confidence: (parsed.confidence as Confidence) || defaultConfidence,
+    suggestions: parsed.suggestions as string[] | undefined,
+    alternatives: parsed.alternatives as { title: string; approach: string }[] | undefined,
+    imagePrompts: parsed.imagePrompts as ImagePromptSuggestion[] | undefined,
+    rawOutput,
+  };
 }
 
 /**
@@ -427,15 +557,18 @@ export async function runContentGeneration(
     console.log(`[ContentRunner] Format: ${brief.format}, Audience: ${brief.audience}`);
     console.log(`[ContentRunner] Timeout: ${timeoutMs}ms`);
 
-    // Spawn claude CLI with the content prompt
+    // Spawn claude CLI - pass prompt via stdin to avoid CLI argument length limits
     const child: ChildProcess = spawn('claude', [
       '--print',
       '--dangerously-skip-permissions',
-      prompt,
     ], {
       env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'], // stdin is pipe, not ignore
     });
+
+    // Write prompt to stdin (avoids shell argument truncation for large prompts)
+    child.stdin?.write(prompt);
+    child.stdin?.end();
 
     const cleanup = () => {
       if (timeoutHandle) {
@@ -590,14 +723,18 @@ export async function runContentRefinement(
     console.log(`[ContentRunner] Feedback: ${feedback.substring(0, 50)}...`);
     console.log(`[ContentRunner] Timeout: ${timeoutMs}ms`);
 
+    // Spawn claude CLI - pass prompt via stdin to avoid CLI argument length limits
     const child: ChildProcess = spawn('claude', [
       '--print',
       '--dangerously-skip-permissions',
-      prompt,
     ], {
       env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'], // stdin is pipe, not ignore
     });
+
+    // Write prompt to stdin (avoids shell argument truncation for large prompts)
+    child.stdin?.write(prompt);
+    child.stdin?.end();
 
     const cleanup = () => {
       if (timeoutHandle) {

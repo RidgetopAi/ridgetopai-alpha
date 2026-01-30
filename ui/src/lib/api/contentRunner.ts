@@ -69,6 +69,20 @@ export async function executeContentGeneration(
     }),
   });
 
+  // Check content-type to handle HTML error pages (e.g., nginx 504 timeout)
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    const text = await response.text();
+    console.error('[ContentRunner API] Non-JSON response:', text.substring(0, 200));
+    return {
+      success: false,
+      workflowId,
+      error: response.status === 504
+        ? 'Request timed out. Try a simpler content brief or try again later.'
+        : `Server error (${response.status}): The server returned an unexpected response.`,
+    };
+  }
+
   const data = await response.json();
 
   if (!response.ok) {

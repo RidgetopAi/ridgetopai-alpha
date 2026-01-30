@@ -516,7 +516,7 @@ app.post('/api/workflow/content', async (req: Request, res: Response) => {
   try {
     // Run the content generation
     const result = await runContentGeneration(brief, {
-      timeoutMs: 300000,
+      timeoutMs: 590000, // 9m50s - less than nginx 600s to avoid race condition
       brandContext,
     });
 
